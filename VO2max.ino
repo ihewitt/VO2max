@@ -2,7 +2,7 @@
 // Spirometrie Project
 // https://www.instructables.com/Accurate-VO2-Max-for-Zwift-and-Strava/
 // Modifications by Ulrich Rissel & Ivor Hewitt
-// git
+// git: https://github.com/ihewitt/VO2max
 const String Version = "V1.1 2022/03/29";
 //+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 
