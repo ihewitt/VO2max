@@ -20,7 +20,7 @@ PSRAM: Disabled*/
 // Set this to the correct printed case venturi diameter
 #define DIAMETER 19
 
-#define VERBOSE // additional debug logging
+//#define VERBOSE // additional debug logging
 
 const String Version = "V2.2 2023/01/23";
 
@@ -296,7 +296,7 @@ void setup() {
 
     // init serial communication  ----------
     Wire.begin();
-    Serial.begin(115200);
+    Serial.begin(9600); //drop to 9600 to see if improves reliability
     if (!Serial) {
         tft.drawString("Serial ERROR!", 0, 0, 4);
     } else {
@@ -392,6 +392,7 @@ void loop() {
         TimerVO2diff = millis() - TimerVO2calc;
         TimerVO2calc = millis(); // resets the timer
 
+        //Are we using the co2 sensor?
         if (settings.co2_on) {
             readCO2();
         } else { // default co2values
@@ -829,17 +830,16 @@ void vo2maxCalc() { // V02max calculation every 5s
     ReadO2();
     AirDensity(); // calculates air density
 
-    co2 = initialO2 - lastO2; // calculated level of CO2 based on Oxygen level loss
-    if (co2 < 0) co2 = 0;     // correction for sensor drift
-
 #ifdef VERBOSE
     // Debug. compare co2
     Serial.print("Calc co2 ");
-    Serial.print(co2);
+    Serial.print(initialO2 - lastO2);
     Serial.print(" sens co2 ");
     Serial.println(co2perc);
 #endif
-    // should this use the Co2 sensor concentration instead?
+
+    co2 = initialO2 - lastO2; // calculated level of CO2 based on Oxygen level loss
+    if (co2 < 0) co2 = 0;     // correction for sensor drift
 
     vo2Total = volumeVEmean * rhoBTPS / rhoSTPD * co2 * 10; // = vo2 in ml/min (* co2% * 10 for L in ml)
     vo2Max = vo2Total / settings.weightkg;                  // correction for wt
@@ -975,13 +975,13 @@ struct MenuItem {
 };
 
 int      icount = 0;
-MenuItem menuitems[] = {{icount++, "Recalibrate O²", false, &fnCalO2, 0},
+MenuItem menuitems[] = {{icount++, "Recalibrate O2", false, &fnCalO2, 0},
                         {icount++, "Calibrate Flow", false, &fnCalAir, 0},
                         {icount++, "Set Weight", false, &GetWeightkg, 0},
                         {icount++, "Heart", true, 0, &settings.heart_on},
                         {icount++, "Sensirion", true, 0, &settings.sens_on},
                         {icount++, "Cheetah", true, 0, &settings.cheet_on},
-                        {icount++, "CO² sensor", true, 0, &settings.co2_on},
+                        {icount++, "CO2 sensor", true, 0, &settings.co2_on},
                         {icount++, "Done.", false, 0, 0}};
 
 //--------------------------------------------------
