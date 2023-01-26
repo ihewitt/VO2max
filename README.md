@@ -13,10 +13,31 @@ Source code for Arduino under "VO2Max" - Arduino board settings to use for TTGO 
     Partition Scheme: Default 4MB with spiffs (1.2MB APP/1.5 SPIFFS)
     Core Debug Level: None`
 
-![Build parts](/images/parts.jpg "Build parts")
-![First build](/images/built.jpg "First build")
-![Upgraded build](/images/built2.jpg "Upgraded build")
-Pictured with the CO2 sensor upgrade attached (waiting for glue to dry!)
+<figure>
+    <img src="/images/parts.jpg" width="640" height="480"
+         alt="Build parts">
+    <figcaption>Source parts, top to bottom. 3M mask with front plate removed, 3D printed case, Oxygen sensor, TTGo T-Display, Flow sensor.</figcaption>
+</figure><br><br>
+<figure>
+    <img src="/images/built.jpg" width="640" height="480"
+         alt="First build">
+    <figcaption>First finished build.</figcaption>
+</figure><br><br>
+<figure>
+    <img src="/images/upgrading.jpg" width="640" height="480"
+         alt="Upgrading">
+    <figcaption>Rebuilding to use CO2 sensor. SCD30 pictured right.</figcaption>
+</figure><br><br>
+<figure>
+    <img src="/images/casefilling.jpg" width="640" height="480"
+         alt="Upgraded build">
+    <figcaption>Assembled into case tightly, BM280 barometer addition mounted onto front of tube, wiring for CO2 monitor fed behind and out to top.</figcaption>
+</figure><br><br>
+<figure>
+    <img src="/images/built2.jpg" width="640" height="480"
+         alt="Upgraded build">
+    <figcaption>Pictured with the CO2 sensor upgrade attached (waiting for glue to dry!)</figcaption>
+</figure><br><br>
 
 3D printing files are within the `design` folder, Ulrich Rissel's design files to use a larger venturi diameter with CO2 sensor holder in `design/CO2_upgrade`
 
