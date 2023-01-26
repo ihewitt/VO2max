@@ -16,10 +16,11 @@ Source code for Arduino under "VO2Max" - Arduino board settings to use for TTGO 
 ![Build parts](/images/parts.jpg "Build parts")
 ![First build](/images/built.jpg "First build")
 ![Upgraded build](/images/built2.jpg "Upgraded build")
+Pictured with the CO2 sensor upgrade attached (waiting for glue to dry!)
 
-3D printing files within the `design` folder, Ulrich Rissel's design files to use a larger venturi diameter with CO2 sensor  in `design/CO2_upgrade`
+3D printing files are within the `design` folder, Ulrich Rissel's design files to use a larger venturi diameter with CO2 sensor holder in `design/CO2_upgrade`
 
 Additional changes in this version:
 - Menu system enhanced with adjustable calibration and setup options.
 - Additional GoldenCheetah integration (with VO2 master output)
-- CO2 sensor support (Ulrich's mod)
+- CO2 sensor support (Ulrich's mods)
