@@ -36,7 +36,7 @@ Source code for Arduino under "VO2Max" - Arduino board settings to use for TTGO 
 <figure>
     <img src="/images/built2.jpg" width="640" height="480"
          alt="Upgraded build">
-    <figcaption>Pictured with the CO2 sensor upgrade attached (waiting for glue to dry!)</figcaption>
+    <figcaption>Pictured with the CO2 sensor upgrade attached</figcaption>
 </figure><br><br>
 
 3D printing files are within the `design` folder, Ulrich Rissel's design files to use a larger venturi diameter with CO2 sensor holder in `design/CO2_upgrade`
