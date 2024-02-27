@@ -1,6 +1,7 @@
 # VO2max
 Code and build files for Rabbitcreek's VO2Max Spirometer. _Incorporating CO2 enhancements from Ulrich Rissel._
 Build instructions on [Instructable](https://www.instructables.com/Accurate-VO2-Max-for-Zwift-and-Strava/)
+See Nik's pages for excellent build details: [meteoscientific](https://github.com/meteoscientific/VO2max)
 
 Source code for Arduino under "VO2Max" - Arduino board settings to use for TTGO T-Display:
 
