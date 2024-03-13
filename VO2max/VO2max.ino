@@ -2,7 +2,7 @@
 // Spirometrie Project
 // https://www.instructables.com/Accurate-VO2-Max-for-Zwift-and-Strava/
 // BLE by Andreas Spiess https://github.com/SensorsIot/Bluetooth-BLE-on-Arduino-IDE
-// Modifications by Ulrich Rissel
+// Modifications by Ulrich Rissel and Ivor Hewitt
 //
 // TTGO T-Display: SDA-Pin21, SCL-Pin22
 //+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
@@ -17,12 +17,21 @@ Partition Scheme: Default 4MB with spiffs (1.2MB APP/1.5 SPIFFS)
 Core Debug Level: None
 PSRAM: Disabled*/
 
+/* Note: In  Arduino/libraries/TFT_eSPI/User_Setup_Select.h
+ * make sure to uncomment the t-display driver line (Setup25) */
+
 // Set this to the correct printed case venturi diameter
 #define DIAMETER 19
+// Uncomment for either STC or SCD CO2 sensor:
+#define STC
+// #define SCD
+// Uncomment for either barometer
+// #define BMP085
+#define BME280
 
-//#define VERBOSE // additional debug logging
+// #define VERBOSE // enable additional debug logging
 
-const String Version = "V2.2 2023/01/23";
+const String Version = "V2.4 2024/03/13";
 
 #include "esp_adc_cal.h" // ADC calibration data
 #include <EEPROM.h>      // include library to read and write settings from flash
@@ -31,10 +40,19 @@ const String Version = "V2.2 2023/01/23";
 int vref = 1100;
 
 #include "DFRobot_OxygenSensor.h" //Library for Oxygen sensor
-#include "SCD30.h"                //Library for CO2 sensor
-#include <Omron_D6FPH.h>          //Library for pressure sensor
+
+#ifdef SCD
+#include "SCD30.h" //declares "SCD30 scd30"
+#elif defined(STC)
+#include "SparkFun_STC3x_Arduino_Library.h"
+STC3x           mySTC31;
+#include "SparkFun_SHTC3.h"
+SHTC3           mySHTC3;
+#endif
+
+#include <Omron_D6FPH.h> //Library for pressure sensor
 #include <SPI.h>
-#include <TFT_eSPI.h> // Graphics and font library for ST7735 driver chip
+#include <TFT_eSPI.h> // Graphics and font library for ST7735 driver chip, see note above
 #include <Wire.h>
 
 #include "Sensirion_GadgetBle_Lib.h" //library to connect to Sensirion App
@@ -100,8 +118,16 @@ struct { // variables for GoldenCheetah
     short vo2;
 } cheetah;
 
+#if defined(BMP085)
 #include <Adafruit_BMP085.h> //Library for barometric sensor
 Adafruit_BMP085 bmp;
+#elif defined(BME280)
+#include <Adafruit_BME280.h> //Library for barometric sensor
+Adafruit_BME280 bmp;
+#endif
+
+bool co2Enabled = false;
+bool bmpEnabled = false;
 
 // Starts Screen for TTGO device
 TFT_eSPI tft = TFT_eSPI(); // Invoke library, pins defined in User_Setup.h
@@ -130,24 +156,37 @@ int       HeaderStreamed = 0;
 int       HeaderStreamedBT = 0;
 int       DEMO = 0; // 1 = DEMO-mode
 
-//############################################
-// Select correct diameter depending on printed
-// case dimensions:
-//############################################
+// ############################################
+//  Select correct diameter depending on printed
+//  case dimensions:
+// ############################################
 
 // Defines the size of the Venturi openings for the  calculations of AirFlow
-float area_1 = 0.000531; // = 26mm diameter
+const float area_1 = 0.000531; // = 26mm diameter
 #if (DIAMETER == 20)
-float area_2 = 0.000314; // = 20mm diameter
+const float area_2 = 0.000314; // = 20mm diameter
 #elif (DIAMETER == 19)
-float area_2 = 0.000284; // = 19mm diameter
+const float     area_2 = 0.000284; // = 19mm diameter
 #else // default
-float area_2 = 0.000201; // = 16mm diameter
+const float area_2 = 0.000201; // = 16mm diameter
 #endif
 
-float rho = 1.225;     // ATP conditions: density based on ambient conditions, dry air
-float rhoSTPD = 1.292; // STPD conditions: density at 0°C, MSL, 1013.25 hPa, dry air
-float rhoBTPS = 1.123; // BTPS conditions: density at ambient  pressure, 35°C, 95% humidity
+// Air density values
+const float dryConstant = 287.058;
+const float wetConstant = 461.495;
+
+// Sensible defaults to use with no barometers
+const float rhoSTPD = 1.292; // STPD conditions: density at 0°C, MSL, 1013.25 hPa, dry air
+float       rhoATPS = 1.225; // ATP conditions: density based on ambient conditions, dry air
+float       rhoBTPS = 1.123; // BTPS conditions: density at ambient  pressure, 35°C, 95% humidity
+
+// Alternative ATPS for room temperature - 20c, 50% = 1.199
+
+// Default ambient values for standard ATPS
+float TempC = 15.0;    // Air temperature in Celsius
+float PresPa = 101325; // uncorrected (absolute) barometric pressure
+float Humid = 0;       // dry air
+
 float massFlow = 0;
 float volFlow = 0;
 float volumeTotal = 0;      // variable for holding total volume of breath
@@ -157,11 +196,11 @@ float volumeVE = 0.0;
 float volumeVEmean = 0.0;
 float volumeExp = 0.0;
 
-//######## Edit correction factor based on flow measurment with calibration syringe ############
+// ######## Edit correction factor based on flow measurment with calibration syringe ############
 
 // float correctionSensor = 1.0;   // correction factor
 
-//##############################################################################################
+// ##############################################################################################
 
 // Basic defaults in settings, saved to eeprom
 struct {
@@ -187,7 +226,7 @@ float  TimerVE = 0.0;
 float  DurationVE = 0.0;
 
 float lastO2 = 0;
-float initialO2 = 0;
+float baselineO2 = 0;
 float co2 = 0;
 float calTotal = 0;
 float vo2Cal = 0;
@@ -198,10 +237,10 @@ float vo2Max = 0;         // value of vo2Max/min/kg, calculated every 30 seconds
 float vo2Total = 0.0;     // value of total vo2Max/min
 float vo2MaxMax = 0;      // Best value of vo2 max for whole time machine is on
 
-float respq = 0.0;      // respiratory quotient in mol VCO2 / mol VO2
-float co2ppm = 0.0;     // CO2 sensor in ppm
+float respq = 0.0; // respiratory quotient in mol VCO2 / mol VO2
+// float co2ppm = 0.0;     // CO2 sensor in ppm
 float co2perc = 0.0;    // = CO2ppm /10000
-float initialCO2 = 0.0; // initial value of CO2 in ppm
+float baselineCO2 = 0.0; // initial value of CO2 in ppm
 float vco2Total = 0.0;
 float vco2Max = 0.0;
 float co2temp = 0.0; // temperature CO2 sensor
@@ -213,8 +252,6 @@ float freqVEmean = 0.0; // mean ventilation frequency
 float expiratVol = 0.0; // last expiratory volume in L
 float volumeTotalOld = 0.0;
 float volumeTotal2 = 0.0;
-float TempC = 15.0;    // Air temperature in Celsius barometric sensor BMP180
-float PresPa = 101325; // uncorrected (absolute) barometric pressure
 
 float Battery_Voltage = 0.0;
 
@@ -291,12 +328,12 @@ void setup() {
         tft.setTextColor(TFT_RED, TFT_BLACK);
         tft.drawString("DEMO-MODE!", 0, 100, 4);
     }
-    delay(3000);
+    delay(1000);
     tft.fillScreen(TFT_BLACK);
 
     // init serial communication  ----------
-    Wire.begin();
-    Serial.begin(9600); //drop to 9600 to see if improves reliability
+    //    Wire.begin();
+    Serial.begin(9600); // drop to 9600 to see if improves reliability
     if (!Serial) {
         tft.drawString("Serial ERROR!", 0, 0, 4);
     } else {
@@ -304,20 +341,61 @@ void setup() {
     }
 
     // init serial bluetooth -----------
-    if (!SerialBT.begin("VO2max")) { // Start Bluetooth with device name
+    if (!SerialBT.begin("VO2max2")) { // Start Bluetooth with device name
         tft.drawString("BT NOT ready!", 0, 25, 4);
     } else {
         tft.drawString("BT ready", 0, 25, 4);
     }
 
-    // init barometric sensor BMP180 ----------
-    if (!bmp.begin()) {
-        // Serial.println("BMP180 sensor error!");
+#if defined(BMP085) || defined(BME280)
+    // init barometric sensor ----------
+    if (!bmp.begin(0x76, &Wire)) {
+#ifdef VERBOSE
+        Serial.println("Unable to initialise bmp sensor");
+#endif
         tft.drawString("Temp/Pres. Error!", 0, 50, 4);
+        bmpEnabled = false;
     } else {
-        // Serial.println("Temp./pressure I2c connect success!");
         tft.drawString("Temp/Pres. ok", 0, 50, 4);
+        bmpEnabled = true;
     }
+#endif
+
+#ifdef STC
+    // init CO2 sensor Sensirion STC31 -------------
+    if (mySTC31.begin() == false || mySHTC3.begin() != SHTC3_Status_Nominal) {
+        tft.drawString("CO2 Error!", 120, 75, 4);
+        co2Enabled = false;
+    } else {
+        mySTC31.setBinaryGas(STC3X_BINARY_GAS_CO2_AIR_25); // 25% range is more than enough
+        // use secondary co2 sensor to get calibration?
+        mySTC31.forcedRecalibration(0.0);
+        // mySTC31.enableAutomaticSelfCalibration(); //don't autocalibrate
+        mySHTC3.update();
+
+        float temperature = mySHTC3.toDegC();
+        mySTC31.setTemperature(temperature);
+        float RH = mySHTC3.toPercent();
+        mySTC31.setRelativeHumidity(RH);
+
+        uint16_t pressure = PresPa;
+        mySTC31.setPressure(pressure);
+
+        co2Enabled = true;
+        tft.drawString("CO2 ok", 120, 75, 4);
+    }
+#endif
+
+#ifdef SCD
+    // init CO2 sensor Sensirion SCD30 -------------
+    scd30.initialize();
+    scd30.setAutoSelfCalibration(0);
+    while (!scd30.isAvailable()) {
+        tft.drawString("CO2init..", 120, 75, 4);
+    }
+    co2Enabled = true;
+    tft.drawString("CO2 ok", 120, 75, 4);
+#endif
 
     // init O2 sensor DF-Robot -----------
     if (!Oxygen.begin(Oxygen_IICAddress)) {
@@ -325,15 +403,6 @@ void setup() {
     } else {
         tft.drawString("O2 ok", 0, 75, 4);
     }
-
-    // init CO2 sensor Sensirion SCD30 -------------
-    // check if sensor is connected?
-    scd30.initialize();
-    scd30.setAutoSelfCalibration(0);
-    while (!scd30.isAvailable()) {
-        tft.drawString("CO2init..", 120, 75, 4);
-    }
-    tft.drawString("CO2 ok", 120, 75, 4);
 
     // init flow/pressure sensor Omron D6F-PF0025AD1 (or D6F-PF0025AD2) ----------
     while (!mySensor.begin(MODEL_0025AD1)) {
@@ -354,7 +423,9 @@ void setup() {
     }
 
     CheckInitialO2();
-    CheckInitialCO2();
+    if (settings.co2_on && co2Enabled) {
+        CheckInitialCO2();
+    }
 
     doMenu();
 
@@ -392,11 +463,11 @@ void loop() {
         TimerVO2diff = millis() - TimerVO2calc;
         TimerVO2calc = millis(); // resets the timer
 
-        //Are we using the co2 sensor?
-        if (settings.co2_on) {
+        // Are we using the co2 sensor?
+        if (settings.co2_on && co2Enabled) {
             readCO2();
         } else { // default co2values
-            co2temp = TempC;
+            co2temp = 35;
         }
 
         vo2maxCalc(); // vo2 max function call
@@ -456,7 +527,8 @@ void loop() {
 
     if (millis() - Timer1min > 30000) {
         Timer1min = millis(); // reset timer
-                              // BatteryBT(); //TEST für battery discharge log ++++++++++++++++++++++++++++++++++++++++++
+
+        // BatteryBT(); //TEST für battery discharge log ++++++++++++++++++++++++++++++++++++++++++
     }
 
     TimerVolCalc = millis(); // part of the integral function to keep calculation volume over time
@@ -470,8 +542,8 @@ void loop() {
 
 void CheckInitialO2() {
     // check initial O2 value -----------
-    initialO2 = Oxygen.ReadOxygenData(COLLECT_NUMBER); // read and check initial VO2%
-    if (initialO2 < 20.00) {
+    baselineO2 = Oxygen.ReadOxygenData(COLLECT_NUMBER); // read and check initial VO2%
+    if (baselineO2 < 20.00) {
         tft.fillScreen(TFT_RED);
         tft.setTextColor(TFT_WHITE, TFT_RED);
         tft.setCursor(5, 5, 4);
@@ -479,23 +551,23 @@ void CheckInitialO2() {
         tft.setCursor(5, 30, 4);
         tft.println("Wait to continue!");
         while (digitalRead(buttonPin1)) {
-            initialO2 = Oxygen.ReadOxygenData(COLLECT_NUMBER);
+            baselineO2 = Oxygen.ReadOxygenData(COLLECT_NUMBER);
             tft.setCursor(5, 67, 4);
             tft.print("O2: ");
-            tft.print(initialO2);
+            tft.print(baselineO2);
             tft.println(" % ");
             tft.setCursor(5, 105, 4);
             tft.println("Continue              >>>");
             delay(500);
         }
-        if (initialO2 < 20.00) initialO2 = 20.90;
+        if (baselineO2 < 20.00) baselineO2 = 20.90;
         tft.fillScreen(TFT_BLACK);
         tft.setTextColor(TFT_GREEN, TFT_BLACK);
         tft.setCursor(5, 5, 4);
         tft.println("Initial O2% set to:");
         tft.setTextColor(TFT_WHITE, TFT_BLACK);
         tft.setCursor(5, 55, 4);
-        tft.print(initialO2);
+        tft.print(baselineO2);
         tft.println(" % ");
         delay(5000);
     }
@@ -505,9 +577,9 @@ void CheckInitialO2() {
 
 void CheckInitialCO2() { // check initial CO2 value
     readCO2();
-    initialCO2 = co2ppm;
+    baselineCO2 = co2perc;
 
-    if (initialCO2 > 1000) {
+    if (baselineCO2 > 0.1) {
         tft.fillScreen(TFT_RED);
         tft.setTextColor(TFT_WHITE, TFT_RED);
         tft.setCursor(5, 5, 4);
@@ -516,24 +588,24 @@ void CheckInitialCO2() { // check initial CO2 value
         tft.println("Wait to continue!");
         while (digitalRead(buttonPin1)) {
             readCO2();
-            initialCO2 = co2ppm;
+            baselineCO2 = co2perc;
             tft.setCursor(5, 67, 4);
             tft.print("CO2: ");
-            tft.print(initialCO2, 0);
-            tft.println(" ppm ");
+            tft.print(baselineCO2, 2);
+            tft.println(" % ");
             tft.setCursor(5, 105, 4);
             tft.println("Continue              >>>");
             delay(500);
         }
-        if (initialCO2 > 1000) initialCO2 = 1000;
+        if (baselineCO2 > 0.1) baselineCO2 = 0.1;
         tft.fillScreen(TFT_BLACK);
         tft.setTextColor(TFT_GREEN, TFT_BLACK);
         tft.setCursor(5, 5, 4);
         tft.println("Initial CO2 set to:");
         tft.setTextColor(TFT_WHITE, TFT_BLACK);
         tft.setCursor(5, 55, 4);
-        tft.print(initialCO2, 0);
-        tft.println(" ppm");
+        tft.print(baselineCO2, 2);
+        tft.println("%");
         delay(5000);
     }
 }
@@ -613,8 +685,9 @@ void VolumeCalc() {
 
     if (pressure >= pressThreshold) { // ongoing integral of volumeTotal
         if (volumeTotal > 50) readVE = 1;
-        massFlow = 1000 * sqrt((abs(pressure) * 2 * rho) / ((1 / (pow(area_2, 2))) - (1 / (pow(area_1, 2))))); // Bernoulli equation
-        volFlow = massFlow / rho;                      // volumetric flow of air
+        massFlow =
+            1000 * sqrt((abs(pressure) * 2 * rhoATPS) / ((1 / (pow(area_2, 2))) - (1 / (pow(area_1, 2))))); // Bernoulli equation
+        volFlow = massFlow / rhoATPS;                  // volumetric flow of air
         volFlow = volFlow * settings.correctionSensor; // correction of sensor calculations
         volumeTotal = volFlow * (millis() - TimerVolCalc) + volumeTotal;
         volumeTotal2 = volFlow * (millis() - TimerVolCalc) + volumeTotal2;
@@ -636,12 +709,18 @@ void GadgetWrite() {
 //--------------------------------------------------
 // Output as basic VO2 Master data for GoldenCheetah
 void VO2Notify() {
-    if (settings.co2_on) {
+    if (co2Enabled && settings.co2_on) // CO2 temp data
+    {
         cheetah.temp = co2temp;
         cheetah.hum = co2hum; // humid
-    } else {
+    } else if (bmpEnabled)    // baro temp data
+    {
         cheetah.temp = TempC;
-        cheetah.hum = 0; // humid
+        cheetah.hum = Humid; // humid
+    } else                   // btps defaults
+    {
+        cheetah.temp = 35;
+        cheetah.hum = 95;
     }
     cheetah.rmv = volumeVEmean;
     cheetah.vo2 = vo2Max;
@@ -762,84 +841,160 @@ void BatteryBT() {
 void ReadO2() {
     float oxygenData = Oxygen.ReadOxygenData(COLLECT_NUMBER);
     lastO2 = oxygenData;
-    if (lastO2 > initialO2) initialO2 = lastO2; // correction for drift of O2 sensor
+    if (lastO2 > baselineO2) baselineO2 = lastO2; // correction for drift of O2 sensor
 
-    if (DEMO == 1) lastO2 = initialO2 - 4; // TEST+++++++++++++++++++++++++++++++++++++++++++++
-    co2 = initialO2 - lastO2;
+    if (DEMO == 1) lastO2 = baselineO2 - 4; // TEST+++++++++++++++++++++++++++++++++++++++++++++
+    co2 = baselineO2 - lastO2;
 }
 
 //--------------------------------------------------
-
 void readCO2() {
     float result[3] = {0};
 
+#ifdef STC
+    if (mySHTC3.update() == SHTC3_Status_Nominal) {
+        float temperature = mySHTC3.toDegC();
+        mySTC31.setTemperature(temperature);
+        float RH = mySHTC3.toPercent();
+        mySTC31.setRelativeHumidity(RH);
+        uint16_t pressure = PresPa;
+        mySTC31.setPressure(pressure);
+
+        // measureGasConcentration will return true when fresh data is available
+        if (mySTC31.measureGasConcentration()) {
+            co2perc = mySTC31.getCO2();
+            co2temp = temperature;
+            co2hum = RH;
+        }
+    }
+#endif
+
+#ifdef SCD
     if (scd30.isAvailable()) {
         scd30.getCarbonDioxideConcentration(result);
 
         co2ppm = result[0];
-        if (co2ppm >= 40000) { // upper limit of CO2 sensor warning
+        if (co2ppm >= 40000) { // upper limit of SCD30 CO2 sensor
             // tft.fillScreen(TFT_RED);
             tft.setTextColor(TFT_WHITE, TFT_RED);
             tft.drawCentreString("CO2 LIMIT!", 120, 55, 4);
         }
 
-        if (DEMO == 1) co2ppm = 30000; // TEST+++++++++++++++++++++++++++++++++++++++++++++
-        if (initialCO2 == 0) initialCO2 = co2ppm;
         co2perc = co2ppm / 10000;
         co2temp = result[1];
         co2hum = result[2];
+    }
 
-        float co2percdiff = (co2ppm - initialCO2) / 10000; // calculates difference to initial CO2
-        if (co2percdiff < 0) co2percdiff = 0;
+#endif
+    // perhaps change to occasional reset/rebase? or average? due to sensor innaccuracy.
+    if (baselineCO2 > co2perc) baselineCO2 = co2perc;
 
-        // VCO2 calculation is based on changes in CO2 concentration (difference to baseline)
-        vco2Total = volumeVEmean * rhoBTPS / rhoSTPD * co2percdiff * 10; // = vco2 in ml/min (* co2% * 10 for L in ml)
-        vco2Max = vco2Total / settings.weightkg;                         // correction for wt
-        respq = (vco2Total * 44) / (vo2Total * 32);                      // respiratory quotient based on molarity
-        // CO2: 44g/mol, O2: 32 g/mol
-        if (isnan(respq)) respq = 0; // correction for errors/div by 0
-        if (respq > 1.5) respq = 0;
+    // co2perc = co2ppm / 10000;
+    float co2percdiff = co2perc - baselineCO2; // calculates difference to initial CO2
+    if (co2percdiff < 0) co2percdiff = 0;
+
+    // VCO2 calculation is based on changes in CO2 concentration (difference to baseline)
+    vco2Total = volumeVEmean * rhoBTPS / rhoSTPD * co2percdiff * 10; // = vco2 in ml/min (* co2% * 10 for L in ml)
+    vco2Max = vco2Total / settings.weightkg;                         // correction for wt
+    respq = (vco2Total * 44) / (vo2Total * 32);                      // respiratory quotient based on molarity
+    // CO2: 44g/mol, O2: 32 g/mol
+#ifdef VERBOSE
+    Serial.print("VCO2t: ");
+    Serial.print(vco2Total);
+    Serial.print("VO2t: ");
+    Serial.print(vo2Total);
+    Serial.print("RQ: ");
+    Serial.println(respq);
+#endif
+    if (isnan(respq)) respq = 0; // correction for errors/div by 0
+    if (respq > 1.5) respq = 0;
 
 #ifdef VERBOSE
-        Serial.print("Carbon Dioxide Concentration is: ");
-        Serial.print(result[0]);
-        Serial.println(" ppm");
-        Serial.print("Temperature = ");
-        Serial.print(result[1]);
-        Serial.println(" ℃");
-        Serial.print("Humidity = ");
-        Serial.print(result[2]);
-        Serial.println(" %");
+    Serial.print("CO2 values: ");
+    Serial.print(co2perc);
+    Serial.print(" %");
+    Serial.print("Temp = ");
+    Serial.print(co2temp);
+    Serial.print(" ℃");
+    Serial.print("Hum = ");
+    Serial.print(co2hum);
+    Serial.println(" %");
 #endif
-    }
 }
 
 //--------------------------------------------------
+// Calculate air density at temp and humidity
+// https://en.wikipedia.org/wiki/Density_of_air
+float calcRho(float tempC, float humid, float pressure) {
 
+    // Use simple Tetens equation
+    float p1 = 6.1078 * (pow(10, (7.5 * tempC / (tempC + 237.3))));
+
+    float pv = humid * p1;
+    float pd = pressure - pv;
+    float tempK = tempC + 273.15;
+
+    float rho = (pd / (dryConstant * tempK)) + (pv / (wetConstant * tempK));
+    return rho;
+}
+
+// Update air density factors for ambient and expired
 void AirDensity() {
-    TempC = bmp.readTemperature(); // Temp from baro sensor BMP180
-    // co2temp is temperature from CO2 sensor
-    PresPa = bmp.readPressure();
-    rho = PresPa / (co2temp + 273.15) / 287.058; // calculation of air density
-    rhoBTPS = PresPa / (35 + 273.15) / 292.9;    // density at BTPS: 35°C, 95% humidity
+    if (bmpEnabled) {
+        TempC = bmp.readTemperature(); // Temp in C from baro sensor
+        PresPa = bmp.readPressure();   // pressure in pa
+#ifdef BME280
+        Humid = bmp.readHumidity(); // %
+#endif
+        rhoATPS = calcRho(TempC, Humid, PresPa); // get Ambient factor
+    }
+
+    if (co2Enabled) {
+        // co2temp is temperature from CO2 sensor
+        rhoBTPS = calcRho(co2temp, co2hum, PresPa); // get body factor
+    }
+
+#ifdef VERBOSE
+    Serial.print("Ambient: ");
+    Serial.print(TempC);
+    Serial.print("℃ ");
+    Serial.print(Humid);
+    Serial.print("% ");
+    Serial.print("Expired: ");
+    Serial.print(co2temp);
+    Serial.print("℃ ");
+    Serial.print(co2hum);
+    Serial.print("% ");
+    Serial.print("Pressure: ");
+    Serial.print(PresPa);
+    Serial.println("pa");
+    Serial.print("ATPS: ");
+    Serial.print(rhoATPS);
+    Serial.print("BTPS: ");
+    Serial.println(rhoBTPS);
+#endif
+
+    // Use constants
+    // rhoATPS = PresPa / (TempC + 273.15) / 287.058; // calculation of ambient density
+    // rhoBTPS = PresPa / (35 + 273.15) / 292.9; // density at BTPS: 35°C, 95% humidity
 }
 
 //--------------------------------------------------
 
 void vo2maxCalc() { // V02max calculation every 5s
     ReadO2();
-    AirDensity(); // calculates air density
+    AirDensity(); // calculates air density factors
 
 #ifdef VERBOSE
     // Debug. compare co2
     Serial.print("Calc co2 ");
-    Serial.print(initialO2 - lastO2);
+    Serial.print(baselineO2 - lastO2);
     Serial.print(" sens co2 ");
     Serial.println(co2perc);
 #endif
 
-    co2 = initialO2 - lastO2; // calculated level of CO2 based on Oxygen level loss
-    if (co2 < 0) co2 = 0;     // correction for sensor drift
+    co2 = baselineO2 - lastO2; // calculated level of CO2 based on Oxygen level loss
+    if (co2 < 0) co2 = 0;      // correction for sensor drift
 
     vo2Total = volumeVEmean * rhoBTPS / rhoSTPD * co2 * 10; // = vo2 in ml/min (* co2% * 10 for L in ml)
     vo2Max = vo2Total / settings.weightkg;                  // correction for wt
@@ -1044,7 +1199,6 @@ void doMenu() {
             delay(100);
         } while ((digitalRead(buttonPin1) == 0) || (digitalRead(buttonPin2) == 0));
 
-        Serial.printf("cur %d, %d, %d", cur, menuitems[cur].toggle, menuitems[cur].fn);
         if (buttonPushCounter2) {
             if (menuitems[cur].toggle) {
                 *menuitems[cur].val = !*menuitems[cur].val;
@@ -1170,7 +1324,7 @@ void tftScreen3() {
     tft.setCursor(5, 105, 4);
     tft.print("O2%diff ");
     tft.setCursor(120, 105, 4);
-    float co2diff = lastO2 - initialO2;
+    float co2diff = lastO2 - baselineO2;
     tft.println(co2diff);
 }
 //--------------------------------------------------------
@@ -1192,9 +1346,9 @@ void tftScreen4() {
     tft.println(lastO2);
 
     tft.setCursor(5, 55, 4);
-    tft.print("CO2ppm ");
+    tft.print("CO2% ");
     tft.setCursor(120, 55, 4);
-    tft.println(co2ppm, 0);
+    tft.println(co2perc, 2);
 
     tft.setCursor(5, 80, 4);
     tft.print("Pressure ");
@@ -1204,8 +1358,7 @@ void tftScreen4() {
     tft.setCursor(5, 105, 4);
     tft.print("Humidity ");
     tft.setCursor(120, 105, 4);
-    float co2diff = lastO2 - initialO2;
-    tft.println(co2hum, 0);
+    tft.println(Humid, 2);
 }
 
 //--------------------------------------------------------
@@ -1252,7 +1405,7 @@ void tftParameters() {
     tft.setCursor(5, 55, 4);
     tft.print("kg/m3");
     tft.setCursor(120, 55, 4);
-    tft.println(rho, 4);
+    tft.println(rhoATPS, 4);
 
     tft.setCursor(5, 80, 4);
     tft.print("kg");
@@ -1267,7 +1420,7 @@ void tftParameters() {
     tft.setCursor(5, 105, 4);
     tft.print("inO2%");
     tft.setCursor(120, 105, 4);
-    tft.println(initialO2);
+    tft.println(baselineO2);
 }
 
 //--------------------------------------------------------
