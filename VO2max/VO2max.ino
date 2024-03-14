@@ -239,7 +239,7 @@ float vo2MaxMax = 0;      // Best value of vo2 max for whole time machine is on
 
 float respq = 0.0; // respiratory quotient in mol VCO2 / mol VO2
 // float co2ppm = 0.0;     // CO2 sensor in ppm
-float co2perc = 0.0;    // = CO2ppm /10000
+float co2perc = 0.0;     // = CO2ppm /10000
 float baselineCO2 = 0.0; // initial value of CO2 in ppm
 float vco2Total = 0.0;
 float vco2Max = 0.0;
@@ -368,19 +368,20 @@ void setup() {
         co2Enabled = false;
     } else {
         mySTC31.setBinaryGas(STC3X_BINARY_GAS_CO2_AIR_25); // 25% range is more than enough
-        // use secondary co2 sensor to get calibration?
-        mySTC31.forcedRecalibration(0.0);
         // mySTC31.enableAutomaticSelfCalibration(); //don't autocalibrate
-        mySHTC3.update();
 
-        float temperature = mySHTC3.toDegC();
-        mySTC31.setTemperature(temperature);
-        float RH = mySHTC3.toPercent();
-        mySTC31.setRelativeHumidity(RH);
+        if (mySHTC3.update() == SHTC3_Status_Nominal) {
 
-        uint16_t pressure = PresPa;
-        mySTC31.setPressure(pressure);
+            float temperature = mySHTC3.toDegC();
+            mySTC31.setTemperature(temperature);
+            float RH = mySHTC3.toPercent();
+            mySTC31.setRelativeHumidity(RH);
 
+            uint16_t pressure = PresPa;
+            mySTC31.setPressure(pressure);
+        }
+
+        // use a secondary co2 sensor to get base calibration?
         co2Enabled = true;
         tft.drawString("CO2 ok", 120, 75, 4);
     }
@@ -463,13 +464,6 @@ void loop() {
         TimerVO2diff = millis() - TimerVO2calc;
         TimerVO2calc = millis(); // resets the timer
 
-        // Are we using the co2 sensor?
-        if (settings.co2_on && co2Enabled) {
-            readCO2();
-        } else { // default co2values
-            co2temp = 35;
-        }
-
         vo2maxCalc(); // vo2 max function call
 
         /*if (TotalTime >= 10000)*/ {
@@ -543,14 +537,30 @@ void loop() {
 void CheckInitialO2() {
     // check initial O2 value -----------
     baselineO2 = Oxygen.ReadOxygenData(COLLECT_NUMBER); // read and check initial VO2%
+    bool low = false;
+
     if (baselineO2 < 20.00) {
-        tft.fillScreen(TFT_RED);
-        tft.setTextColor(TFT_WHITE, TFT_RED);
-        tft.setCursor(5, 5, 4);
-        tft.println("INITIAL O2% LOW!");
-        tft.setCursor(5, 30, 4);
-        tft.println("Wait to continue!");
+        // Clear colour once we're above 20
         while (digitalRead(buttonPin1)) {
+            if (!low && baselineO2 < 20) {
+                tft.fillScreen(TFT_RED);
+                tft.setTextColor(TFT_WHITE, TFT_RED);
+                tft.setCursor(5, 5, 4);
+                tft.println("INITIAL O2% LOW!");
+                tft.setCursor(5, 30, 4);
+                tft.println("Wait to continue!");
+                low = true;
+
+            } else if (low && baselineO2 >= 20) {
+                tft.fillScreen(TFT_GREEN);
+                tft.setTextColor(TFT_BLACK, TFT_GREEN);
+                tft.setCursor(5, 5, 4);
+                tft.println("O2% OK!");
+                tft.setCursor(5, 30, 4);
+                tft.println("Continue!");
+                low = false;
+            }
+
             baselineO2 = Oxygen.ReadOxygenData(COLLECT_NUMBER);
             tft.setCursor(5, 67, 4);
             tft.print("O2: ");
@@ -578,15 +588,28 @@ void CheckInitialO2() {
 void CheckInitialCO2() { // check initial CO2 value
     readCO2();
     baselineCO2 = co2perc;
+    bool high = false;
 
     if (baselineCO2 > 0.1) {
-        tft.fillScreen(TFT_RED);
-        tft.setTextColor(TFT_WHITE, TFT_RED);
-        tft.setCursor(5, 5, 4);
-        tft.println("INITIAL CO2 HIGH!");
-        tft.setCursor(5, 30, 4);
-        tft.println("Wait to continue!");
         while (digitalRead(buttonPin1)) {
+            if (!high && baselineCO2 > 0.1) {
+                tft.fillScreen(TFT_RED);
+                tft.setTextColor(TFT_WHITE, TFT_RED);
+                tft.setCursor(5, 5, 4);
+                tft.println("INITIAL CO2% HIGH!");
+                tft.setCursor(5, 30, 4);
+                tft.println("Wait to continue!");
+                high = true;
+            } else if (high && baselineCO2 <= 0.1) {
+                tft.fillScreen(TFT_GREEN);
+                tft.setTextColor(TFT_BLACK, TFT_GREEN);
+                tft.setCursor(5, 5, 4);
+                tft.println("CO2% OK!");
+                tft.setCursor(5, 30, 4);
+                tft.println("Continue!");
+                high = false;
+            }
+
             readCO2();
             baselineCO2 = co2perc;
             tft.setCursor(5, 67, 4);
@@ -853,20 +876,29 @@ void readCO2() {
 
 #ifdef STC
     if (mySHTC3.update() == SHTC3_Status_Nominal) {
-        float temperature = mySHTC3.toDegC();
-        mySTC31.setTemperature(temperature);
-        float RH = mySHTC3.toPercent();
-        mySTC31.setRelativeHumidity(RH);
+        co2temp = mySHTC3.toDegC();
+        mySTC31.setTemperature(co2temp);
+        co2hum = mySHTC3.toPercent();
+        mySTC31.setRelativeHumidity(co2hum);
         uint16_t pressure = PresPa;
         mySTC31.setPressure(pressure);
-
-        // measureGasConcentration will return true when fresh data is available
-        if (mySTC31.measureGasConcentration()) {
-            co2perc = mySTC31.getCO2();
-            co2temp = temperature;
-            co2hum = RH;
+        Serial.print("Read temp ");
+        Serial.print(co2temp);
+        Serial.print(" hum ");
+        Serial.println(co2hum);
+    }
+    // measureGasConcentration will return true when fresh data is available
+    if (mySTC31.measureGasConcentration()) {
+        co2perc = mySTC31.getCO2();
+        Serial.print("Co2 ");
+        Serial.println(co2perc);
+        if (co2perc < 0) {
+            co2perc = 0.0;
+            // Reset baseline if below zero
+            mySTC31.forcedRecalibration(0.0);
         }
     }
+
 #endif
 
 #ifdef SCD
@@ -949,7 +981,7 @@ void AirDensity() {
         rhoATPS = calcRho(TempC, Humid, PresPa); // get Ambient factor
     }
 
-    if (co2Enabled) {
+    if (settings.co2_on && co2Enabled) {
         // co2temp is temperature from CO2 sensor
         rhoBTPS = calcRho(co2temp, co2hum, PresPa); // get body factor
     }
@@ -982,6 +1014,12 @@ void AirDensity() {
 //--------------------------------------------------
 
 void vo2maxCalc() { // V02max calculation every 5s
+    // Are we using the co2 sensor?
+    if (settings.co2_on && co2Enabled) {
+        readCO2();
+    } else { // default co2values
+        co2temp = 35;
+    }
     ReadO2();
     AirDensity(); // calculates air density factors
 
@@ -1043,6 +1081,10 @@ void showScreen() { // select active screen
 void showParameters() {
     while (digitalRead(buttonPin2)) { // wait until button2 is pressed
         // Let stabilise
+        if (settings.co2_on && co2Enabled) {
+            readCO2();
+            baselineCO2 = co2perc;
+        }
         AirDensity();
         tftParameters(); // show initial sensor parameters
 
@@ -1393,9 +1435,9 @@ void tftParameters() {
     tft.setTextColor(TFT_WHITE, TFT_BLUE);
 
     tft.setCursor(5, 5, 4);
-    tft.print("*C");
+    tft.print("Co2");
     tft.setCursor(120, 5, 4);
-    tft.println(co2temp, 1);
+    tft.println(baselineCO2, 1);
 
     tft.setCursor(5, 30, 4);
     tft.print("hPA");
