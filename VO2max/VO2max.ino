@@ -363,27 +363,17 @@ void setup() {
 
 #ifdef STC
     // init CO2 sensor Sensirion STC31 -------------
-    if (mySTC31.begin() == false || mySHTC3.begin() != SHTC3_Status_Nominal) {
-        tft.drawString("CO2 Error!", 120, 75, 4);
-        co2Enabled = false;
-    } else {
-        mySTC31.setBinaryGas(STC3X_BINARY_GAS_CO2_AIR_25); // 25% range is more than enough
-        // mySTC31.enableAutomaticSelfCalibration(); //don't autocalibrate
-
-        if (mySHTC3.update() == SHTC3_Status_Nominal) {
-
-            float temperature = mySHTC3.toDegC();
-            mySTC31.setTemperature(temperature);
-            float RH = mySHTC3.toPercent();
-            mySTC31.setRelativeHumidity(RH);
-
-            uint16_t pressure = PresPa;
-            mySTC31.setPressure(pressure);
-        }
-
-        // use a secondary co2 sensor to get base calibration?
+    if (mySTC31.begin()                                      //
+        && mySHTC3.begin() == SHTC3_Status_Nominal           //
+        && mySTC31.setBinaryGas(STC3X_BINARY_GAS_CO2_AIR_25) // 25% is more than enough
+        && mySTC31.forcedRecalibration(0.0)                  // Use baseline from an alternate sensor?
+        //&& mySTC31.enableAutomaticSelfCalibration()         // Don't autocalibrate
+    ) {
         co2Enabled = true;
         tft.drawString("CO2 ok", 120, 75, 4);
+    } else {
+        tft.drawString("CO2 Error!", 120, 75, 4);
+        co2Enabled = false;
     }
 #endif
 
@@ -424,16 +414,19 @@ void setup() {
     }
 
     CheckInitialO2();
+    
     if (settings.co2_on && co2Enabled) {
+        //
         CheckInitialCO2();
     }
 
     doMenu();
 
     showParameters();
-
-    InitBLE(); // init BLE for transmitting VO2 as heartrate
-    bpm = 30;  // initial test value
+    if (settings.cheet_on || settings.heart_on) {
+        InitBLE(); // init BLE for transmitting VO2 as heartrate
+        bpm = 30;  // initial test value
+    }
 
     tft.fillScreen(TFT_BLACK);
     tft.setTextColor(TFT_GREEN, TFT_BLACK);
@@ -796,7 +789,7 @@ void ExcelStream() {
     Serial.print(",");
     Serial.print(lastO2);
     Serial.print(",");
-    Serial.println(co2perc, 3);
+    Serial.println(co2perc, 2);
 }
 //--------------------------------------------------
 void ExcelStreamBT() {
@@ -841,7 +834,7 @@ void ExcelStreamBT() {
     SerialBT.print(",");
     SerialBT.print(lastO2);
     SerialBT.print(",");
-    SerialBT.println(co2perc, 3);
+    SerialBT.println(co2perc, 2);
 }
 
 //--------------------------------------------------
@@ -873,6 +866,7 @@ void ReadO2() {
 //--------------------------------------------------
 void readCO2() {
     float result[3] = {0};
+    bool  read = false;
 
 #ifdef STC
     if (mySHTC3.update() == SHTC3_Status_Nominal) {
@@ -880,8 +874,8 @@ void readCO2() {
         mySTC31.setTemperature(co2temp);
         co2hum = mySHTC3.toPercent();
         mySTC31.setRelativeHumidity(co2hum);
-        uint16_t pressure = PresPa;
-        mySTC31.setPressure(pressure);
+        uint16_t pressure = PresPa / 100;
+        mySTC31.setPressure(pressure); // Pressure in mbar
         Serial.print("Read temp ");
         Serial.print(co2temp);
         Serial.print(" hum ");
@@ -891,14 +885,14 @@ void readCO2() {
     if (mySTC31.measureGasConcentration()) {
         co2perc = mySTC31.getCO2();
         Serial.print("Co2 ");
-        Serial.println(co2perc);
+        Serial.println(co2perc); // Log read value
         if (co2perc < 0) {
             co2perc = 0.0;
-            // Reset baseline if below zero
-            mySTC31.forcedRecalibration(0.0);
+            // Reset baseline if below zero?
+            // mySTC31.forcedRecalibration(0.0);
         }
+        read = true;
     }
-
 #endif
 
 #ifdef SCD
@@ -915,21 +909,24 @@ void readCO2() {
         co2perc = co2ppm / 10000;
         co2temp = result[1];
         co2hum = result[2];
+        read = true;
     }
 
 #endif
-    // perhaps change to occasional reset/rebase? or average? due to sensor innaccuracy.
-    if (baselineCO2 > co2perc) baselineCO2 = co2perc;
+    if (read) {
+        // perhaps change to occasional reset/rebase? or average? due to sensor innaccuracy.
+        if (baselineCO2 > co2perc) baselineCO2 = co2perc;
 
-    // co2perc = co2ppm / 10000;
-    float co2percdiff = co2perc - baselineCO2; // calculates difference to initial CO2
-    if (co2percdiff < 0) co2percdiff = 0;
+        // co2perc = co2ppm / 10000;
+        float co2percdiff = co2perc - baselineCO2; // calculates difference to initial CO2
+        if (co2percdiff < 0) co2percdiff = 0;
 
-    // VCO2 calculation is based on changes in CO2 concentration (difference to baseline)
-    vco2Total = volumeVEmean * rhoBTPS / rhoSTPD * co2percdiff * 10; // = vco2 in ml/min (* co2% * 10 for L in ml)
-    vco2Max = vco2Total / settings.weightkg;                         // correction for wt
-    respq = (vco2Total * 44) / (vo2Total * 32);                      // respiratory quotient based on molarity
-    // CO2: 44g/mol, O2: 32 g/mol
+        // VCO2 calculation is based on changes in CO2 concentration (difference to baseline)
+        vco2Total = volumeVEmean * rhoBTPS / rhoSTPD * co2percdiff * 10; // = vco2 in ml/min (* co2% * 10 for L in ml)
+        vco2Max = vco2Total / settings.weightkg;                         // correction for wt
+        respq = (vco2Total * 44) / (vo2Total * 32);                      // respiratory quotient based on molarity
+        // CO2: 44g/mol, O2: 32 g/mol
+    }
 #ifdef VERBOSE
     Serial.print("VCO2t: ");
     Serial.print(vco2Total);
@@ -1321,7 +1318,7 @@ void tftScreen2() {
         tft.setCursor(5, 55, 4);
         tft.print("CO2% ");
         tft.setCursor(120, 55, 4);
-        tft.println(co2perc, 3);
+        tft.println(co2perc, 2);
     }
 
     tft.setCursor(5, 80, 4);
