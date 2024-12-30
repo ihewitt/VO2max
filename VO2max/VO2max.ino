@@ -13,25 +13,41 @@ CPU Frequency: 240Mhz (WiFi/BT)
 Flash Frequency: 80Mhz
 Flash Mode: QIO
 Flash Size: 4MB (32Mb)
-Partition Scheme: Default 4MB with spiffs (1.2MB APP/1.5 SPIFFS)
+Partition Scheme: Huge APP (3MB No OTA/1MB SPIFFS)
 Core Debug Level: None
 PSRAM: Disabled*/
+
+// Libraries:
+//   ArduinoBLE 1.3.7
+//   TFTeSPI 2.5.43
+//   BMP280 2.6.8
+//   SHTC3 1.0.1
+//   DFRobot Oxygen 1.0.1
+//   Omron D6F-PH 1.1.0
+//   NimBLE 2.1.2
+//   Sensirion Gadget 1.4.1
+//   Sensirion STC3 1.0.1
 
 /* Note: In  Arduino/libraries/TFT_eSPI/User_Setup_Select.h
  * make sure to uncomment the t-display driver line (Setup25) */
 
 // Set this to the correct printed case venturi diameter
 #define DIAMETER 19
-// Uncomment for either STC or SCD CO2 sensor:
+
+// Uncomment for either STC31 or SCD30 CO2 sensors:
 #define STC
 // #define SCD
-// Uncomment for either barometer
+
+// Uncomment for either barometer:
 // #define BMP085
 #define BME280
 
+// Uncomment to broadcast as sensirion gadget (lots of memory)
+#define GADGET
+
 // #define VERBOSE // enable additional debug logging
 
-const String Version = "V2.4 2024/03/13";
+const String Version = "V2.5 2024/12/30";
 
 #include "esp_adc_cal.h" // ADC calibration data
 #include <EEPROM.h>      // include library to read and write settings from flash
@@ -41,21 +57,27 @@ int vref = 1100;
 
 #include "DFRobot_OxygenSensor.h" //Library for Oxygen sensor
 
-#ifdef SCD
+#ifdef SCD         // original SCD30 sensor (inadequate - max 4% co2)
 #include "SCD30.h" //declares "SCD30 scd30"
 #elif defined(STC)
-#include "SparkFun_STC3x_Arduino_Library.h"
-STC3x           mySTC31;
-#include "SparkFun_SHTC3.h"
-SHTC3           mySHTC3;
+#include "SensirionI2cStc3x.h" //Use Sensirion library
+SensirionI2cStc3x stc3x_sensor;
+#include "SparkFun_SHTC3.h"    //Use sparkfun shtc3 library
+SHTC3             mySHTC3;
 #endif
 
+#include "hal/gpio_ll.h"
 #include <Omron_D6FPH.h> //Library for pressure sensor
 #include <SPI.h>
-#include <TFT_eSPI.h> // Graphics and font library for ST7735 driver chip, see note above
+#include <TFT_eSPI.h> // Graphics and font library for ST7735 driver chip, see note above (line 20)
 #include <Wire.h>
 
-#include "Sensirion_GadgetBle_Lib.h" //library to connect to Sensirion App
+// NOTE: If GadgetBLE doesn't compile because setMinPreferred/MaxPreferred removed,
+// replace with:
+// _data->pNimBLEAdvertising->setPreferredParams(0x06, 0x12);
+#ifdef GADGET
+#include "Sensirion_Gadget_BLE.h" //library to publish to Sensirion 'gadget' App
+#endif
 
 // declarations for bluetooth serial --------------
 #include "BluetoothSerial.h"
@@ -97,6 +119,7 @@ BLEDescriptor     heartRateDescriptor(BLEUUID((uint16_t)0x2901));
 BLEDescriptor     sensorPositionDescriptor(BLEUUID((uint16_t)0x2901)); // 0x2901: Characteristic User Description
 
 // GoldenCheetah service
+// Publish to golden cheetah as a 'vo2master'
 #define cheetahService BLEUUID("00001523-1212-EFDE-1523-785FEABCD123")
 BLECharacteristic cheetahCharacteristics(BLEUUID("00001524-1212-EFDE-1523-785FEABCD123"), BLECharacteristic::PROPERTY_NOTIFY | 0);
 BLEDescriptor     cheetahDescriptor(BLEUUID((uint16_t)0x2901));
@@ -166,7 +189,7 @@ const float area_1 = 0.000531; // = 26mm diameter
 #if (DIAMETER == 20)
 const float area_2 = 0.000314; // = 20mm diameter
 #elif (DIAMETER == 19)
-const float     area_2 = 0.000284; // = 19mm diameter
+const float area_2 = 0.000284; // = 19mm diameter
 #else // default
 const float area_2 = 0.000201; // = 16mm diameter
 #endif
@@ -238,7 +261,11 @@ float vo2Total = 0.0;     // value of total vo2Max/min
 float vo2MaxMax = 0;      // Best value of vo2 max for whole time machine is on
 
 float respq = 0.0; // respiratory quotient in mol VCO2 / mol VO2
-// float co2ppm = 0.0;     // CO2 sensor in ppm
+
+#ifdef SCD
+float co2ppm = 0.0; // CO2 sensor in ppm
+#endif
+
 float co2perc = 0.0;     // = CO2ppm /10000
 float baselineCO2 = 0.0; // initial value of CO2 in ppm
 float vco2Total = 0.0;
@@ -256,7 +283,14 @@ float volumeTotal2 = 0.0;
 float Battery_Voltage = 0.0;
 
 // settings for Sensirion App
-GadgetBle gadgetBle = GadgetBle(GadgetBle::DataType::T_RH_CO2);
+#ifdef GADGET
+NimBLELibraryWrapper lib;
+DataProvider         provider(lib, DataType::T_RH_CO2_ALT);
+#endif
+
+// STC31 calc
+static float frcReferenceValue = 0.0;
+uint16_t     signalRawGasConcentration(float gasConcentration) { return (uint16_t)gasConcentration * 327.68 + 16384.0; }
 
 //----------------------------------------------------------------------------------------------------------
 //                  SETUP
@@ -332,19 +366,12 @@ void setup() {
     tft.fillScreen(TFT_BLACK);
 
     // init serial communication  ----------
-    //    Wire.begin();
+    Wire.begin();
     Serial.begin(9600); // drop to 9600 to see if improves reliability
     if (!Serial) {
         tft.drawString("Serial ERROR!", 0, 0, 4);
     } else {
         tft.drawString("Serial ok", 0, 0, 4);
-    }
-
-    // init serial bluetooth -----------
-    if (!SerialBT.begin("VO2max2")) { // Start Bluetooth with device name
-        tft.drawString("BT NOT ready!", 0, 25, 4);
-    } else {
-        tft.drawString("BT ready", 0, 25, 4);
     }
 
 #if defined(BMP085) || defined(BME280)
@@ -362,19 +389,83 @@ void setup() {
 #endif
 
 #ifdef STC
-    // init CO2 sensor Sensirion STC31 -------------
-    if (mySTC31.begin()                                      //
-        && mySHTC3.begin() == SHTC3_Status_Nominal           //
-        && mySTC31.setBinaryGas(STC3X_BINARY_GAS_CO2_AIR_25) // 25% is more than enough
-        && mySTC31.forcedRecalibration(0.0)                  // Use baseline from an alternate sensor?
-        //&& mySTC31.enableAutomaticSelfCalibration()         // Don't autocalibrate
-    ) {
-        co2Enabled = true;
-        tft.drawString("CO2 ok", 120, 75, 4);
-    } else {
-        tft.drawString("CO2 Error!", 120, 75, 4);
-        co2Enabled = false;
+    stc3x_sensor.begin(Wire, 0x29);
+    delay(20);
+    uint32_t id;
+    uint64_t serial;
+    stc3x_sensor.prepareProductIdentifier();
+    stc3x_sensor.getProductId(id, serial);
+
+    int gas;
+    if (id == 0x8010304) // stc31-c
+    {
+        Serial.println("STC31-C");
+        // gas=0x13; //standard - filter recommended
+        gas = 0x03; // low noise - filter not needed
+    } else          // 0x8010301 //stc31
+    {
+        Serial.println("STC31");
+        gas = 0x03;
+    } // 0-25% in air
+    if (0 != stc3x_sensor.setBinaryGas(gas)) // air 0-40% //13
+        Serial.println("Unable to access stc3x");
+
+    if (mySHTC3.begin() != SHTC3_Status_Nominal) {
+        Serial.println(F("SHTC3 not detected. Please check wiring. Freezing..."));
+        while (1)
+            ;
     }
+    if (mySHTC3.update() != SHTC3_Status_Nominal) // Request a measurement
+    {
+        Serial.println(F("Could not read the RH and T from the SHTC3! Freezing..."));
+        while (1)
+            ;
+    }
+    float temperature;
+    float RH;
+
+    // stc3x_sensor.enableAutomaticSelfCalibration();
+    stc3x_sensor.disableAutomaticSelfCalibration();
+
+    float stc3xCo2Concentration = 0.0;
+    float stc3xTemperature = 0.0;
+
+    // stabilise CO2 sensor
+    // datasheet suggests 20s?
+    // add a "stabilise" in the idle/waiting state instead?
+    tft.setCursor(5, 5, 4);
+    tft.println("Stabilise CO2");
+    for (int i = 0; i < 10; i++) {
+        temperature = mySHTC3.toDegC(); // "toDegC" returns the temperature
+        RH = mySHTC3.toPercent();       // "toPercent" returns the percent humidity
+        PresPa = bmp.readPressure();    // pressure in pa
+
+        stc3x_sensor.setRelativeHumidity(RH);
+        stc3x_sensor.setTemperature(temperature);
+        stc3x_sensor.setPressure(PresPa / 100);
+
+        stc3x_sensor.measureGasConcentration(stc3xCo2Concentration, stc3xTemperature);
+        tft.setCursor(5, 30, 4);
+        tft.print("Conc ");
+        tft.print(stc3xCo2Concentration);
+        tft.println("%");
+
+        delay(1000);
+    }
+
+    do { // shouldnt need loop
+        uint16_t frcReferenceValueRaw = signalRawGasConcentration(frcReferenceValue);
+        stc3x_sensor.forcedRecalibration(frcReferenceValueRaw);
+
+        delay(1000);
+        stc3x_sensor.measureGasConcentration(stc3xCo2Concentration, stc3xTemperature);
+        tft.setCursor(5, 30, 4);
+        tft.print("Calib ");
+        tft.print(stc3xCo2Concentration);
+        tft.println("%");
+
+    } while (stc3xCo2Concentration > 0.04);
+    tft.drawString("CO2 ok", 120, 75, 4);
 #endif
 
 #ifdef SCD
@@ -405,16 +496,23 @@ void setup() {
     delay(2000);
 
     // activate Sensirion App ----------
+#ifdef GADGET
     if (settings.sens_on) {
-        gadgetBle.begin();
-        gadgetBle.writeCO2(1);
-        gadgetBle.writeTemperature(1);
-        gadgetBle.writeHumidity(1);
-        gadgetBle.commit();
+        provider.begin();
+#ifdef VERBOSE
+        Serial.print("Sensirion GadgetBle Lib initialized with deviceId = ");
+        Serial.println(provider.getDeviceIdString());
+#endif
     }
-
+#endif
+    // init serial bluetooth -----------
+    if (!SerialBT.begin("VO2max")) { // Start Bluetooth with device name
+        tft.drawString("BT NOT ready!", 0, 25, 4);
+    } else {
+        tft.drawString("BT ready", 0, 25, 4);
+    }
     CheckInitialO2();
-    
+
     if (settings.co2_on && co2Enabled) {
         //
         CheckInitialCO2();
@@ -467,8 +565,10 @@ void loop() {
         ExcelStream();   // send csv data via wired com port
         ExcelStreamBT(); // send csv data via Bluetooth com port
 
+#ifdef GADGET
         if (settings.sens_on) GadgetWrite(); // Send to sensirion
-        if (settings.cheet_on) VO2Notify();  // Send to GoldenCheetah as VO2 Master
+#endif
+        if (settings.cheet_on) VO2Notify(); // Send to GoldenCheetah as VO2 Master
 
         // send BLE data ----------------
 
@@ -520,7 +620,9 @@ void loop() {
 
     TimerVolCalc = millis(); // part of the integral function to keep calculation volume over time
     // Resets amount of time between calcs
-    if (settings.sens_on) gadgetBle.handleEvents();
+#ifdef GADGET
+    if (settings.sens_on) provider.handleDownload();
+#endif
 }
 
 //----------------------------------------------------------------------------------------------------------
@@ -529,7 +631,7 @@ void loop() {
 
 void CheckInitialO2() {
     // check initial O2 value -----------
-    baselineO2 = Oxygen.ReadOxygenData(COLLECT_NUMBER); // read and check initial VO2%
+    baselineO2 = Oxygen.getOxygenData(COLLECT_NUMBER); // read and check initial VO2%
     bool low = false;
 
     if (baselineO2 < 20.00) {
@@ -554,7 +656,7 @@ void CheckInitialO2() {
                 low = false;
             }
 
-            baselineO2 = Oxygen.ReadOxygenData(COLLECT_NUMBER);
+            baselineO2 = Oxygen.getOxygenData(COLLECT_NUMBER);
             tft.setCursor(5, 67, 4);
             tft.print("O2: ");
             tft.print(baselineO2);
@@ -713,14 +815,16 @@ void VolumeCalc() {
     }
 }
 
+#ifdef GADGET
 //--------------------------------------------------
 void GadgetWrite() {
     // Send to sensirion app
-    gadgetBle.writeCO2(vo2Total);
-    gadgetBle.writeTemperature(vo2Max);
-    gadgetBle.writeHumidity(lastO2);
-    gadgetBle.commit();
+    provider.writeValueToCurrentSample(vo2Total, SignalType::CO2_PARTS_PER_MILLION);
+    provider.writeValueToCurrentSample(vo2Max, SignalType::TEMPERATURE_DEGREES_CELSIUS);
+    provider.writeValueToCurrentSample(lastO2, SignalType::RELATIVE_HUMIDITY_PERCENTAGE);
+    provider.commitSample();
 }
+#endif
 
 //--------------------------------------------------
 // Output as basic VO2 Master data for GoldenCheetah
@@ -855,7 +959,7 @@ void BatteryBT() {
 //--------------------------------------------------
 
 void ReadO2() {
-    float oxygenData = Oxygen.ReadOxygenData(COLLECT_NUMBER);
+    float oxygenData = Oxygen.getOxygenData(COLLECT_NUMBER);
     lastO2 = oxygenData;
     if (lastO2 > baselineO2) baselineO2 = lastO2; // correction for drift of O2 sensor
 
@@ -871,19 +975,18 @@ void readCO2() {
 #ifdef STC
     if (mySHTC3.update() == SHTC3_Status_Nominal) {
         co2temp = mySHTC3.toDegC();
-        mySTC31.setTemperature(co2temp);
+        stc3x_sensor.setTemperature(co2temp);
         co2hum = mySHTC3.toPercent();
-        mySTC31.setRelativeHumidity(co2hum);
+        stc3x_sensor.setRelativeHumidity(co2hum);
         uint16_t pressure = PresPa / 100;
-        mySTC31.setPressure(pressure); // Pressure in mbar
+        stc3x_sensor.setPressure(pressure); // Pressure in mbar
         Serial.print("Read temp ");
         Serial.print(co2temp);
         Serial.print(" hum ");
         Serial.println(co2hum);
     }
     // measureGasConcentration will return true when fresh data is available
-    if (mySTC31.measureGasConcentration()) {
-        co2perc = mySTC31.getCO2();
+    if (stc3x_sensor.measureGasConcentration(co2perc, co2temp)) {
         Serial.print("Co2 ");
         Serial.println(co2perc); // Log read value
         if (co2perc < 0) {
@@ -911,8 +1014,8 @@ void readCO2() {
         co2hum = result[2];
         read = true;
     }
-
 #endif
+
     if (read) {
         // perhaps change to occasional reset/rebase? or average? due to sensor innaccuracy.
         if (baselineCO2 > co2perc) baselineCO2 = co2perc;
@@ -1099,7 +1202,7 @@ void showParameters() {
 //--------------------------------------------------
 // Reset O2 calibration value
 void fnCalO2() {
-    Oxygen.Calibrate(20.9, 0.0);
+    Oxygen.calibrate(20.9, 0.0);
     showParameters();
 }
 
