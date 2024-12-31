@@ -33,8 +33,8 @@ PSRAM: Disabled*/
 /* Note: In  Arduino/libraries/TFT_eSPI/User_Setup_Select.h
  * make sure to uncomment the t-display driver line (Setup25) */
 
-/// --------------------------------------------------------------
-/// MACROS TO DEFINE BELOW
+/// ############################################################################################
+///  MACROS TO DEFINE BELOW
 
 /// Set this to the correct printed case venturi diameter:
 #define DIAMETER 19
@@ -57,8 +57,8 @@ PSRAM: Disabled*/
 // #define OXYSENSOR
 
 #define VERBOSE // enable additional logging
-// #define DEBUG  // additional debug info
-/// --------------------------------------------------------------
+#define DEBUG   // additional debug info
+/// ############################################################################################
 
 #include "esp_adc_cal.h" // ADC calibration data
 #include <EEPROM.h>      // include library to read and write settings from flash
@@ -145,8 +145,6 @@ class MyServerCallbacks : public BLEServerCallbacks {
     void onDisconnect(BLEServer *pServer) { _BLEClientConnected = false; }
 };
 
-// ------------------------------------------
-
 struct { // variables for GoldenCheetah
     short freq;
     byte  temp;
@@ -179,8 +177,6 @@ DFRobot_OxygenSensor Oxygen;
 #define COLLECT_NUMBER    10        // collect number, the collection range is 1-100.
 #define Oxygen_IICAddress ADDRESS_3 // I2C  label for o2 address
 #endif
-
-uint8_t data[12], counter; // ??? not used ??? ########################################
 
 // Defines button state for adding wt
 const int buttonPin1 = 0;
@@ -234,12 +230,6 @@ float pressThreshold = 0.2; // threshold for starting calculation of VE
 float volumeVE = 0.0;
 float volumeVEmean = 0.0;
 float volumeExp = 0.0;
-
-// ######## Edit correction factor based on flow measurment with calibration syringe ############
-
-// float correctionSensor = 1.0;   // correction factor
-
-// ##############################################################################################
 
 // Basic defaults in settings, saved to eeprom
 struct {
@@ -392,10 +382,10 @@ void setup() {
 #ifdef VERBOSE
         Serial.println("Unable to initialise bmp sensor");
 #endif
-        tft.drawString("Temp/Pres. Error!", 0, 50, 4);
+        tft.drawString("Temp/Pres. Error!", 0, 25, 4);
         bmpEnabled = false;
     } else {
-        tft.drawString("Temp/Pres. ok", 0, 50, 4);
+        tft.drawString("Temp/Pres. ok", 0, 25, 4);
         bmpEnabled = true;
     }
 #endif
@@ -446,7 +436,7 @@ void setup() {
     // stabilise CO2 sensor
     // datasheet suggests 20s?
     // add a "stabilise" in the idle/waiting state instead?
-    tft.setCursor(0, 25, 4);
+    tft.setCursor(0, 50, 4);
     tft.println("Stablise");
     for (int i = 0; i < 20; i++) {
         temperature = mySHTC3.toDegC(); // "toDegC" returns the temperature
@@ -467,7 +457,7 @@ void setup() {
         prevCo2 = stc3xCo2Concentration;
         delay(1000);
     }
-    tft.setCursor(0, 25, 4);
+    tft.setCursor(0, 50, 4);
     tft.println("Calibrate");
 
     do { // shouldnt need loop
@@ -482,9 +472,11 @@ void setup() {
 
     } while (stc3xCo2Concentration > 0.04); // shouldnt be necessary after recal
     co2Enabled = true;
-    tft.setCursor(0, 25, 4);
+    tft.setCursor(0, 50, 4);
     tft.println("                ");
-    tft.drawString("CO2 ok  ", 120, 75, 4);
+    tft.setCursor(0, 75, 4);
+    tft.println("                ");
+    tft.drawString("CO2 ok  ", 120, 50, 4);
 #endif
 
 #ifdef SCD30
@@ -492,28 +484,28 @@ void setup() {
     scd30.initialize();
     scd30.setAutoSelfCalibration(0);
     while (!scd30.isAvailable()) {
-        tft.drawString("CO2init...", 120, 75, 4);
+        tft.drawString("CO2init...", 120, 50, 4);
     }
     co2Enabled = true;
-    tft.drawString("CO2 ok   ", 120, 75, 4);
+    tft.drawString("CO2 ok   ", 120, 50, 4);
 #endif
 
     // init O2 sensor DF-Robot -----------
 #ifdef OXYSENSOR
     if (!Oxygen.begin(Oxygen_IICAddress)) {
-        tft.drawString("O2 ERROR!", 0, 75, 4);
+        tft.drawString("O2 ERROR!", 0, 50, 4);
     } else {
-        tft.drawString("O2 ok   ", 0, 75, 4);
+        tft.drawString("O2 ok   ", 0, 50, 4);
     }
 #endif
 
     // init flow/pressure sensor Omron D6F-PF0025AD1 (or D6F-PF0025AD2) ----------
     while (!mySensor.begin(MODEL_0025AD1)) {
         // Serial.println("Flow sensor error!");
-        tft.drawString("Flow-Sensor ERROR!", 0, 100, 4);
+        tft.drawString("Flow-Sensor ERROR!", 0, 75, 4);
     }
     // Serial.println("Flow-Sensor I2c connect success!");
-    tft.drawString("Flow-Sensor ok", 0, 100, 4);
+    tft.drawString("Flow-Sensor ok", 0, 75, 4);
 
     // activate Sensirion App ----------
 #ifdef GADGET
@@ -527,9 +519,9 @@ void setup() {
 #endif
     // init serial bluetooth -----------
     if (!SerialBT.begin("VO2max")) { // Start Bluetooth with device name
-        tft.drawString("BT NOT ready!", 0, 25, 4);
+        tft.drawString("BT NOT ready!", 0, 100, 4);
     } else {
-        tft.drawString("BT ready", 0, 25, 4);
+        tft.drawString("BT ready", 0, 100, 4);
     }
     delay(2000);
 #ifdef OXYSENSOR
@@ -980,7 +972,7 @@ void BatteryBT() {
 }
 
 //--------------------------------------------------
-// Deduce co2 from Oxygen sensor alternatively use CO2 data directly
+// Deduce co2 from Oxygen sensor, alternatively use CO2 data directly
 float CalcCO2() {
     // Are we using the co2 sensor?
     if (settings.co2_on && co2Enabled) {
@@ -1436,12 +1428,12 @@ void tftScreen1() {
         tft.print("VCO2 ");
         tft.setCursor(120, 80, 4);
         tft.println(vco2Max);
-    }
 
-    tft.setCursor(5, 105, 4);
-    tft.print("RQ ");
-    tft.setCursor(120, 105, 4);
-    tft.println(respq);
+        tft.setCursor(5, 105, 4);
+        tft.print("RQ ");
+        tft.setCursor(120, 105, 4);
+        tft.println(respq);
+    }
 }
 
 //--------------------------------------------------------
