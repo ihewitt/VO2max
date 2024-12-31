@@ -7,6 +7,8 @@
 // TTGO T-Display: SDA-Pin21, SCL-Pin22
 //+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 
+const String Version = "V2.5 2024/12/30";
+
 /*Board: ESP32 Dev Module
 Upload Speed: 921600
 CPU Frequency: 240Mhz (WiFi/BT)
@@ -31,23 +33,32 @@ PSRAM: Disabled*/
 /* Note: In  Arduino/libraries/TFT_eSPI/User_Setup_Select.h
  * make sure to uncomment the t-display driver line (Setup25) */
 
-// Set this to the correct printed case venturi diameter
+/// --------------------------------------------------------------
+/// MACROS TO DEFINE BELOW
+
+/// Set this to the correct printed case venturi diameter:
 #define DIAMETER 19
 
-// Uncomment for either STC31 or SCD30 CO2 sensors:
-#define STC
-// #define SCD
+// CO2 sensor support
+// Uncomment to use either STC31 or SCD30 CO2 sensors:
+#define STC31
+// #define SCD30
 
-// Uncomment for either barometer:
+// Uncomment to use either BMP85 or BMP280 barometers:
 // #define BMP085
 #define BME280
 
 // Uncomment to broadcast as sensirion gadget (lots of memory)
-#define GADGET
+// #define GADGET
 
-// #define VERBOSE // enable additional debug logging
+// EXPERIMENTAL:
+// If undefined, use CO2 sensor instead of oxygen sensor otherwise
+// calculate CO2 values from O2 data
+// #define OXYSENSOR
 
-const String Version = "V2.5 2024/12/30";
+#define VERBOSE // enable additional logging
+// #define DEBUG  // additional debug info
+/// --------------------------------------------------------------
 
 #include "esp_adc_cal.h" // ADC calibration data
 #include <EEPROM.h>      // include library to read and write settings from flash
@@ -55,11 +66,15 @@ const String Version = "V2.5 2024/12/30";
 #define ADC_PIN 34
 int vref = 1100;
 
+#ifdef OXYSENSOR
 #include "DFRobot_OxygenSensor.h" //Library for Oxygen sensor
+#elif !defined(STC31) && !defined(SCD30)
+#error "A CO2 sensor must be enabled if no OXY sensor"
+#endif
 
-#ifdef SCD         // original SCD30 sensor (inadequate - max 4% co2)
+#ifdef SCD30       // original SCD30 sensor (inadequate - max 4% co2)
 #include "SCD30.h" //declares "SCD30 scd30"
-#elif defined(STC)
+#elif defined(STC31)
 #include "SensirionI2cStc3x.h" //Use Sensirion library
 SensirionI2cStc3x stc3x_sensor;
 #include "SparkFun_SHTC3.h"    //Use sparkfun shtc3 library
@@ -72,7 +87,7 @@ SHTC3             mySHTC3;
 #include <TFT_eSPI.h> // Graphics and font library for ST7735 driver chip, see note above (line 20)
 #include <Wire.h>
 
-// NOTE: If GadgetBLE doesn't compile because setMinPreferred/MaxPreferred removed,
+// NOTE: If GadgetBLE doesn't compile because of setMinPreferred/MaxPreferred removed,
 // replace with:
 // _data->pNimBLEAdvertising->setPreferredParams(0x06, 0x12);
 #ifdef GADGET
@@ -159,9 +174,11 @@ TFT_eSPI tft = TFT_eSPI(); // Invoke library, pins defined in User_Setup.h
 Omron_D6FPH mySensor;
 
 // Label of oxygen sensor
+#ifdef OXYSENSOR
 DFRobot_OxygenSensor Oxygen;
 #define COLLECT_NUMBER    10        // collect number, the collection range is 1-100.
 #define Oxygen_IICAddress ADDRESS_3 // I2C  label for o2 address
+#endif
 
 uint8_t data[12], counter; // ??? not used ??? ########################################
 
@@ -177,7 +194,6 @@ int       screenChanged = 0;
 int       screenNr = 1;
 int       HeaderStreamed = 0;
 int       HeaderStreamedBT = 0;
-int       DEMO = 0; // 1 = DEMO-mode
 
 // ############################################
 //  Select correct diameter depending on printed
@@ -262,7 +278,7 @@ float vo2MaxMax = 0;      // Best value of vo2 max for whole time machine is on
 
 float respq = 0.0; // respiratory quotient in mol VCO2 / mol VO2
 
-#ifdef SCD
+#ifdef SCD30
 float co2ppm = 0.0; // CO2 sensor in ppm
 #endif
 
@@ -289,8 +305,10 @@ DataProvider         provider(lib, DataType::T_RH_CO2_ALT);
 #endif
 
 // STC31 calc
+#ifdef STC31
 static float frcReferenceValue = 0.0;
 uint16_t     signalRawGasConcentration(float gasConcentration) { return (uint16_t)gasConcentration * 327.68 + 16384.0; }
+#endif
 
 //----------------------------------------------------------------------------------------------------------
 //                  SETUP
@@ -356,12 +374,6 @@ void setup() {
     tft.drawString("VO2max", 0, 25, 4);
     tft.drawString(Version, 0, 50, 4);
     tft.drawString("Initialising...", 0, 75, 4);
-    // check for DEMO mode ---------
-    if (!digitalRead(buttonPin2)) { // DEMO Mode if button2 is pressed during power on
-        DEMO = 1;
-        tft.setTextColor(TFT_RED, TFT_BLACK);
-        tft.drawString("DEMO-MODE!", 0, 100, 4);
-    }
     delay(1000);
     tft.fillScreen(TFT_BLACK);
 
@@ -388,7 +400,7 @@ void setup() {
     }
 #endif
 
-#ifdef STC
+#ifdef STC31
     stc3x_sensor.begin(Wire, 0x29);
     delay(20);
     uint32_t id;
@@ -397,18 +409,18 @@ void setup() {
     stc3x_sensor.getProductId(id, serial);
 
     int gas;
+
     if (id == 0x8010304) // stc31-c
     {
         Serial.println("STC31-C");
-        // gas=0x13; //standard - filter recommended
-        gas = 0x03; // low noise - filter not needed
-    } else          // 0x8010301 //stc31
+        gas = 0x13; // standard - filter recommended
+        // gas = 0x03; // low noise - filter not needed
+    } else // 0x8010301 //stc31
     {
         Serial.println("STC31");
         gas = 0x03;
-    } // 0-25% in air
-    if (0 != stc3x_sensor.setBinaryGas(gas)) // air 0-40% //13
-        Serial.println("Unable to access stc3x");
+    }
+    if (0 != stc3x_sensor.setBinaryGas(gas)) Serial.println("Unable to access stc3x");
 
     if (mySHTC3.begin() != SHTC3_Status_Nominal) {
         Serial.println(F("SHTC3 not detected. Please check wiring. Freezing..."));
@@ -427,15 +439,16 @@ void setup() {
     // stc3x_sensor.enableAutomaticSelfCalibration();
     stc3x_sensor.disableAutomaticSelfCalibration();
 
+    float prevCo2 = 0.0;
     float stc3xCo2Concentration = 0.0;
     float stc3xTemperature = 0.0;
 
     // stabilise CO2 sensor
     // datasheet suggests 20s?
     // add a "stabilise" in the idle/waiting state instead?
-    tft.setCursor(5, 5, 4);
-    tft.println("Stabilise CO2");
-    for (int i = 0; i < 10; i++) {
+    tft.setCursor(0, 25, 4);
+    tft.println("Stablise");
+    for (int i = 0; i < 20; i++) {
         temperature = mySHTC3.toDegC(); // "toDegC" returns the temperature
         RH = mySHTC3.toPercent();       // "toPercent" returns the percent humidity
         PresPa = bmp.readPressure();    // pressure in pa
@@ -445,13 +458,17 @@ void setup() {
         stc3x_sensor.setPressure(PresPa / 100);
 
         stc3x_sensor.measureGasConcentration(stc3xCo2Concentration, stc3xTemperature);
-        tft.setCursor(5, 30, 4);
-        tft.print("Conc ");
+        tft.setCursor(0, 75, 4);
         tft.print(stc3xCo2Concentration);
-        tft.println("%");
+        tft.print("% ");
+        tft.print(prevCo2 - stc3xCo2Concentration);
+        tft.println("% ");
 
+        prevCo2 = stc3xCo2Concentration;
         delay(1000);
     }
+    tft.setCursor(0, 25, 4);
+    tft.println("Calibrate");
 
     do { // shouldnt need loop
         uint16_t frcReferenceValueRaw = signalRawGasConcentration(frcReferenceValue);
@@ -459,32 +476,36 @@ void setup() {
 
         delay(1000);
         stc3x_sensor.measureGasConcentration(stc3xCo2Concentration, stc3xTemperature);
-        tft.setCursor(5, 30, 4);
-        tft.print("Calib ");
+        tft.setCursor(0, 75, 4);
         tft.print(stc3xCo2Concentration);
-        tft.println("%");
+        tft.println("%  ");
 
-    } while (stc3xCo2Concentration > 0.04);
-    tft.drawString("CO2 ok", 120, 75, 4);
+    } while (stc3xCo2Concentration > 0.04); // shouldnt be necessary after recal
+    co2Enabled = true;
+    tft.setCursor(0, 25, 4);
+    tft.println("                ");
+    tft.drawString("CO2 ok  ", 120, 75, 4);
 #endif
 
-#ifdef SCD
+#ifdef SCD30
     // init CO2 sensor Sensirion SCD30 -------------
     scd30.initialize();
     scd30.setAutoSelfCalibration(0);
     while (!scd30.isAvailable()) {
-        tft.drawString("CO2init..", 120, 75, 4);
+        tft.drawString("CO2init...", 120, 75, 4);
     }
     co2Enabled = true;
-    tft.drawString("CO2 ok", 120, 75, 4);
+    tft.drawString("CO2 ok   ", 120, 75, 4);
 #endif
 
     // init O2 sensor DF-Robot -----------
+#ifdef OXYSENSOR
     if (!Oxygen.begin(Oxygen_IICAddress)) {
         tft.drawString("O2 ERROR!", 0, 75, 4);
     } else {
-        tft.drawString("O2 ok", 0, 75, 4);
+        tft.drawString("O2 ok   ", 0, 75, 4);
     }
+#endif
 
     // init flow/pressure sensor Omron D6F-PF0025AD1 (or D6F-PF0025AD2) ----------
     while (!mySensor.begin(MODEL_0025AD1)) {
@@ -493,7 +514,6 @@ void setup() {
     }
     // Serial.println("Flow-Sensor I2c connect success!");
     tft.drawString("Flow-Sensor ok", 0, 100, 4);
-    delay(2000);
 
     // activate Sensirion App ----------
 #ifdef GADGET
@@ -511,7 +531,13 @@ void setup() {
     } else {
         tft.drawString("BT ready", 0, 25, 4);
     }
+    delay(2000);
+#ifdef OXYSENSOR
     CheckInitialO2();
+#else
+    baselineO2 = 20.9;
+    settings.co2_on = true; // force on
+#endif
 
     if (settings.co2_on && co2Enabled) {
         //
@@ -629,6 +655,7 @@ void loop() {
 //                  FUNCTIONS
 //----------------------------------------------------------------------------------------------------------
 
+#ifdef OXYSENSOR
 void CheckInitialO2() {
     // check initial O2 value -----------
     baselineO2 = Oxygen.getOxygenData(COLLECT_NUMBER); // read and check initial VO2%
@@ -677,6 +704,7 @@ void CheckInitialO2() {
         delay(5000);
     }
 }
+#endif
 
 //--------------------------------------------------
 
@@ -753,11 +781,6 @@ void VolumeCalc() {
     // Read pressure from Omron D6F PH0025AD1 (or D6F PH0025AD2)
     float pressureraw = mySensor.getPressure();
     pressure = pressure / 2 + pressureraw / 2;
-
-    if (DEMO == 1) {
-        pressure = 10;                                      // TEST+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-        if ((millis() - TimerVO2calc) > 2500) pressure = 0; // TEST++++++++++++++++++++++++++++
-    }
 
     if (isnan(pressure)) { // isnan = is not a number,  unvalid sensor data
         tft.fillScreen(TFT_RED);
@@ -957,14 +980,33 @@ void BatteryBT() {
 }
 
 //--------------------------------------------------
-
-void ReadO2() {
+// Deduce co2 from Oxygen sensor alternatively use CO2 data directly
+float CalcCO2() {
+    // Are we using the co2 sensor?
+    if (settings.co2_on && co2Enabled) {
+#ifdef DEBUG
+        Serial.print("Read co2: ");
+        Serial.println(co2perc);
+#endif
+        readCO2();
+    } else { // default co2values
+        co2temp = 35;
+    }
+#ifdef OXYSENSOR
     float oxygenData = Oxygen.getOxygenData(COLLECT_NUMBER);
     lastO2 = oxygenData;
     if (lastO2 > baselineO2) baselineO2 = lastO2; // correction for drift of O2 sensor
-
-    if (DEMO == 1) lastO2 = baselineO2 - 4; // TEST+++++++++++++++++++++++++++++++++++++++++++++
-    co2 = baselineO2 - lastO2;
+#ifdef DEBUG
+    // Debug. compare co2
+    Serial.print("Calc co2: ");
+    Serial.println(baselineO2 - lastO2);
+#endif
+    return baselineO2 - lastO2;
+#else
+    float O2 = baselineO2 - co2perc;
+    lastO2 = O2;
+    return co2perc;
+#endif
 }
 
 //--------------------------------------------------
@@ -972,7 +1014,7 @@ void readCO2() {
     float result[3] = {0};
     bool  read = false;
 
-#ifdef STC
+#ifdef STC31
     if (mySHTC3.update() == SHTC3_Status_Nominal) {
         co2temp = mySHTC3.toDegC();
         stc3x_sensor.setTemperature(co2temp);
@@ -980,15 +1022,19 @@ void readCO2() {
         stc3x_sensor.setRelativeHumidity(co2hum);
         uint16_t pressure = PresPa / 100;
         stc3x_sensor.setPressure(pressure); // Pressure in mbar
+#ifdef DEBUG
         Serial.print("Read temp ");
         Serial.print(co2temp);
         Serial.print(" hum ");
         Serial.println(co2hum);
+#endif
     }
     // measureGasConcentration will return true when fresh data is available
     if (stc3x_sensor.measureGasConcentration(co2perc, co2temp)) {
+#ifdef DEBUG
         Serial.print("Co2 ");
         Serial.println(co2perc); // Log read value
+#endif
         if (co2perc < 0) {
             co2perc = 0.0;
             // Reset baseline if below zero?
@@ -998,7 +1044,7 @@ void readCO2() {
     }
 #endif
 
-#ifdef SCD
+#ifdef SCD30
     if (scd30.isAvailable()) {
         scd30.getCarbonDioxideConcentration(result);
 
@@ -1047,7 +1093,7 @@ void readCO2() {
     Serial.print(" %");
     Serial.print("Temp = ");
     Serial.print(co2temp);
-    Serial.print(" ℃");
+    Serial.print(" ℃ ");
     Serial.print("Hum = ");
     Serial.print(co2hum);
     Serial.println(" %");
@@ -1078,12 +1124,18 @@ void AirDensity() {
 #ifdef BME280
         Humid = bmp.readHumidity(); // %
 #endif
-        rhoATPS = calcRho(TempC, Humid, PresPa); // get Ambient factor
+        // Always use initial temperature
+        static float baseTemp = TempC;
+        // rhoATPS = calcRho(TempC, Humid, PresPa); // get Ambient factor
+        rhoATPS = calcRho(baseTempC, Humid, PresPa); // get Ambient factor
     }
 
     if (settings.co2_on && co2Enabled) {
         // co2temp is temperature from CO2 sensor
-        rhoBTPS = calcRho(co2temp, co2hum, PresPa); // get body factor
+        // Hardcode body temp
+        rhoBTPS = calcRho(35, 95, PresPa); // get body factor
+
+        // rhoBTPS = calcRho(co2temp, co2hum, PresPa); // get body factor
     }
 
 #ifdef VERBOSE
@@ -1098,7 +1150,7 @@ void AirDensity() {
     Serial.print(co2hum);
     Serial.print("% ");
     Serial.print("Pressure: ");
-    Serial.print(PresPa);
+    Serial.print(PresPa / 100);
     Serial.println("pa");
     Serial.print("ATPS: ");
     Serial.print(rhoATPS);
@@ -1114,25 +1166,8 @@ void AirDensity() {
 //--------------------------------------------------
 
 void vo2maxCalc() { // V02max calculation every 5s
-    // Are we using the co2 sensor?
-    if (settings.co2_on && co2Enabled) {
-        readCO2();
-    } else { // default co2values
-        co2temp = 35;
-    }
-    ReadO2();
+    co2 = CalcCO2();
     AirDensity(); // calculates air density factors
-
-#ifdef VERBOSE
-    // Debug. compare co2
-    Serial.print("Calc co2 ");
-    Serial.print(baselineO2 - lastO2);
-    Serial.print(" sens co2 ");
-    Serial.println(co2perc);
-#endif
-
-    co2 = baselineO2 - lastO2; // calculated level of CO2 based on Oxygen level loss
-    if (co2 < 0) co2 = 0;      // correction for sensor drift
 
     vo2Total = volumeVEmean * rhoBTPS / rhoSTPD * co2 * 10; // = vo2 in ml/min (* co2% * 10 for L in ml)
     vo2Max = vo2Total / settings.weightkg;                  // correction for wt
@@ -1201,10 +1236,12 @@ void showParameters() {
 
 //--------------------------------------------------
 // Reset O2 calibration value
+#ifdef OXYSENSOR
 void fnCalO2() {
     Oxygen.calibrate(20.9, 0.0);
     showParameters();
 }
+#endif
 
 //--------------------------------------------------
 // Calibrate flow sensor
@@ -1272,20 +1309,28 @@ struct MenuItem {
 };
 
 int      icount = 0;
-MenuItem menuitems[] = {{icount++, "Recalibrate O2", false, &fnCalO2, 0},
-                        {icount++, "Calibrate Flow", false, &fnCalAir, 0},
-                        {icount++, "Set Weight", false, &GetWeightkg, 0},
-                        {icount++, "Heart", true, 0, &settings.heart_on},
-                        {icount++, "Sensirion", true, 0, &settings.sens_on},
-                        {icount++, "Cheetah", true, 0, &settings.cheet_on},
-                        {icount++, "CO2 sensor", true, 0, &settings.co2_on},
-                        {icount++, "Done.", false, 0, 0}};
+MenuItem menuitems[] = {
+#ifdef OXYSENSOR
+    {icount++, "Recalibrate O2", false, &fnCalO2, 0},
+#endif
+    {icount++, "Calibrate Flow", false, &fnCalAir, 0},
+    {icount++, "Set Weight", false, &GetWeightkg, 0},
+    {icount++, "Heart", true, 0, &settings.heart_on},
+#ifdef GADGET
+    {icount++, "Sensirion", true, 0, &settings.sens_on},
+#endif
+    {icount++, "Cheetah", true, 0, &settings.cheet_on},
+#if defined(STC31) || defined(SCD30)
+    {icount++, "CO2 sensor", true, 0, &settings.co2_on},
+#endif
+    {icount++, "Done.", false, 0, 0}};
 
 //--------------------------------------------------
 void doMenu() {
     int total = 5; // max on screen
-    int cur = 7;   // Default to Done.
-    int first = 0; // 2
+    if (total > icount) total = icount;
+    int cur = icount - 1; // Default to Done.
+    int first = 0;        // 2
     first = (cur - (total - 1));
 
     loadSettings();
