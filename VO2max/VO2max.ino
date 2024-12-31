@@ -1125,7 +1125,7 @@ void AirDensity() {
         Humid = bmp.readHumidity(); // %
 #endif
         // Always use initial temperature
-        static float baseTemp = TempC;
+        static float baseTempC = TempC;
         // rhoATPS = calcRho(TempC, Humid, PresPa); // get Ambient factor
         rhoATPS = calcRho(baseTempC, Humid, PresPa); // get Ambient factor
     }
