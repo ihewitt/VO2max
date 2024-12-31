@@ -20,29 +20,30 @@ Core Debug Level: None
 PSRAM: Disabled*/
 
 // Libraries:
-//   ArduinoBLE 1.3.7
-//   TFTeSPI 2.5.43
-//   BMP280 2.6.8
-//   SHTC3 1.0.1
-//   DFRobot Oxygen 1.0.1
-//   Omron D6F-PH 1.1.0
-//   NimBLE 2.1.2
-//   Sensirion Gadget 1.4.1
-//   Sensirion STC3 1.0.1
+//   Sensirion_I2C_STC3x : 1.0.1
+//   SparkFun_SHTC3_Humidity_and_Temperature_Sensor_Library : 1.1.4
+//   Omron_D6F-PH_Arduino_Library : 1.1.0
+//   TFT_eSPI : 2.5.43
+//   Adafruit_BME280_Library : 2.2.4
+//   Adafruit_BMP085_Library : 1.2.4
+//   Sensirion_Gadget_BLE_Arduino_Lib : 1.4.1
+//   NimBLE-Arduino : 2.1.2
+//   DFRobot_OxygenSensor : 1.0.1
 
 /* Note: In  Arduino/libraries/TFT_eSPI/User_Setup_Select.h
  * make sure to uncomment the t-display driver line (Setup25) */
 
 /// ############################################################################################
 ///  MACROS TO DEFINE BELOW
+/// ############################################################################################
 
 /// Set this to the correct printed case venturi diameter:
 #define DIAMETER 19
 
 // CO2 sensor support
 // Uncomment to use either STC31 or SCD30 CO2 sensors:
-#define STC31
-// #define SCD30
+#define STC_31
+// #define SCD_30
 
 // Uncomment to use either BMP85 or BMP280 barometers:
 // #define BMP085
@@ -54,10 +55,11 @@ PSRAM: Disabled*/
 // EXPERIMENTAL:
 // If undefined, use CO2 sensor instead of oxygen sensor otherwise
 // calculate CO2 values from O2 data
-// #define OXYSENSOR
+#define OXYSENSOR
 
 #define VERBOSE // enable additional logging
 #define DEBUG   // additional debug info
+
 /// ############################################################################################
 
 #include "esp_adc_cal.h" // ADC calibration data
@@ -68,13 +70,13 @@ int vref = 1100;
 
 #ifdef OXYSENSOR
 #include "DFRobot_OxygenSensor.h" //Library for Oxygen sensor
-#elif !defined(STC31) && !defined(SCD30)
+#elif !defined(STC_31) && !defined(SCD_30)
 #error "A CO2 sensor must be enabled if no OXY sensor"
 #endif
 
-#ifdef SCD30       // original SCD30 sensor (inadequate - max 4% co2)
-#include "SCD30.h" //declares "SCD30 scd30"
-#elif defined(STC31)
+#ifdef SCD_30       // original SCD_30 sensor (inadequate - max 4% co2)
+#include "SCD_30.h" //declares "SCD_30 scd30"
+#elif defined(STC_31)
 #include "SensirionI2cStc3x.h" //Use Sensirion library
 SensirionI2cStc3x stc3x_sensor;
 #include "SparkFun_SHTC3.h"    //Use sparkfun shtc3 library
@@ -268,7 +270,7 @@ float vo2MaxMax = 0;      // Best value of vo2 max for whole time machine is on
 
 float respq = 0.0; // respiratory quotient in mol VCO2 / mol VO2
 
-#ifdef SCD30
+#ifdef SCD_30
 float co2ppm = 0.0; // CO2 sensor in ppm
 #endif
 
@@ -294,8 +296,8 @@ NimBLELibraryWrapper lib;
 DataProvider         provider(lib, DataType::T_RH_CO2_ALT);
 #endif
 
-// STC31 calc
-#ifdef STC31
+// STC_31 calc
+#ifdef STC_31
 static float frcReferenceValue = 0.0;
 uint16_t     signalRawGasConcentration(float gasConcentration) { return (uint16_t)gasConcentration * 327.68 + 16384.0; }
 #endif
@@ -390,7 +392,7 @@ void setup() {
     }
 #endif
 
-#ifdef STC31
+#ifdef STC_31
     stc3x_sensor.begin(Wire, 0x29);
     delay(20);
     uint32_t id;
@@ -402,12 +404,12 @@ void setup() {
 
     if (id == 0x8010304) // stc31-c
     {
-        Serial.println("STC31-C");
+        Serial.println("STC_31-C");
         gas = 0x13; // standard - filter recommended
         // gas = 0x03; // low noise - filter not needed
     } else // 0x8010301 //stc31
     {
-        Serial.println("STC31");
+        Serial.println("STC_31");
         gas = 0x03;
     }
     if (0 != stc3x_sensor.setBinaryGas(gas)) Serial.println("Unable to access stc3x");
@@ -479,8 +481,8 @@ void setup() {
     tft.drawString("CO2 ok  ", 120, 50, 4);
 #endif
 
-#ifdef SCD30
-    // init CO2 sensor Sensirion SCD30 -------------
+#ifdef SCD_30
+    // init CO2 sensor Sensirion SCD_30 -------------
     scd30.initialize();
     scd30.setAutoSelfCalibration(0);
     while (!scd30.isAvailable()) {
@@ -1006,7 +1008,7 @@ void readCO2() {
     float result[3] = {0};
     bool  read = false;
 
-#ifdef STC31
+#ifdef STC_31
     if (mySHTC3.update() == SHTC3_Status_Nominal) {
         co2temp = mySHTC3.toDegC();
         stc3x_sensor.setTemperature(co2temp);
@@ -1030,18 +1032,18 @@ void readCO2() {
         if (co2perc < 0) {
             co2perc = 0.0;
             // Reset baseline if below zero?
-            // mySTC31.forcedRecalibration(0.0);
+            // mySTC_31.forcedRecalibration(0.0);
         }
         read = true;
     }
 #endif
 
-#ifdef SCD30
+#ifdef SCD_30
     if (scd30.isAvailable()) {
         scd30.getCarbonDioxideConcentration(result);
 
         co2ppm = result[0];
-        if (co2ppm >= 40000) { // upper limit of SCD30 CO2 sensor
+        if (co2ppm >= 40000) { // upper limit of SCD_30 CO2 sensor
             // tft.fillScreen(TFT_RED);
             tft.setTextColor(TFT_WHITE, TFT_RED);
             tft.drawCentreString("CO2 LIMIT!", 120, 55, 4);
@@ -1312,7 +1314,7 @@ MenuItem menuitems[] = {
     {icount++, "Sensirion", true, 0, &settings.sens_on},
 #endif
     {icount++, "Cheetah", true, 0, &settings.cheet_on},
-#if defined(STC31) || defined(SCD30)
+#if defined(STC_31) || defined(SCD_30)
     {icount++, "CO2 sensor", true, 0, &settings.co2_on},
 #endif
     {icount++, "Done.", false, 0, 0}};
