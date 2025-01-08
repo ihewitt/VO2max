@@ -26,6 +26,7 @@ PSRAM: Disabled*/
 //   TFT_eSPI : 2.5.43
 //   Adafruit_BME280_Library : 2.2.4
 //   Adafruit_BMP085_Library : 1.2.4
+//   Adafruit_BMP280_Library : 2.6.8
 //   Sensirion_Gadget_BLE_Arduino_Lib : 1.4.1
 //   NimBLE-Arduino : 2.1.2
 //   DFRobot_OxygenSensor : 1.0.1
@@ -42,12 +43,13 @@ PSRAM: Disabled*/
 
 // CO2 sensor support
 // Uncomment to use either STC31 or SCD30 CO2 sensors:
-#define STC_31
-// #define SCD_30
+// #define STC_31
+#define SCD_30
 
 // Uncomment to use either BMP85 or BMP280 barometers:
 // #define BMP085
-#define BME280
+// #define BME280
+#define BMP280
 
 // Uncomment to broadcast as sensirion gadget (lots of memory)
 // #define GADGET
@@ -75,7 +77,7 @@ int vref = 1100;
 #endif
 
 #ifdef SCD_30       // original SCD_30 sensor (inadequate - max 4% co2)
-#include "SCD_30.h" //declares "SCD_30 scd30"
+#include "SCD30.h" //declares "SCD_30 scd30"
 #elif defined(STC_31)
 #include "SensirionI2cStc3x.h" //Use Sensirion library
 SensirionI2cStc3x stc3x_sensor;
@@ -162,6 +164,9 @@ Adafruit_BMP085 bmp;
 #elif defined(BME280)
 #include <Adafruit_BME280.h> //Library for barometric sensor
 Adafruit_BME280 bmp;
+#elif defined(BMP280)
+#include <Adafruit_BMP280.h> //Library for barometric sensor
+Adafruit_BMP280 bmp;
 #endif
 
 bool co2Enabled = false;
@@ -378,17 +383,20 @@ void setup() {
         tft.drawString("Serial ok", 0, 0, 4);
     }
 
-#if defined(BMP085) || defined(BME280)
+#if defined(BMP085) || defined(BME280) || defined(BMP280)
     // init barometric sensor ----------
-    if (!bmp.begin(0x76, &Wire)) {
+    #if defined(BMP280)
+        bmpEnabled = bmp.begin(0x76);
+    #else
+        bmpEnabled = bmp.begin(0x76, &Wire);
+    #endif
+    if (!bmpEnabled) {
 #ifdef VERBOSE
         Serial.println("Unable to initialise bmp sensor");
 #endif
         tft.drawString("Temp/Pres. Error!", 0, 25, 4);
-        bmpEnabled = false;
     } else {
         tft.drawString("Temp/Pres. ok", 0, 25, 4);
-        bmpEnabled = true;
     }
 #endif
 
