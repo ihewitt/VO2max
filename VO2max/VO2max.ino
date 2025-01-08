@@ -75,7 +75,7 @@ int vref = 1100;
 #endif
 
 #ifdef SCD_30       // original SCD_30 sensor (inadequate - max 4% co2)
-#include "SCD_30.h" //declares "SCD_30 scd30"
+#include "SCD30.h" //declares "SCD_30 scd30"
 #elif defined(STC_31)
 #include "SensirionI2cStc3x.h" //Use Sensirion library
 SensirionI2cStc3x stc3x_sensor;
