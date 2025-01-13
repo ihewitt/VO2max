@@ -7,7 +7,7 @@
 // TTGO T-Display: SDA-Pin21, SCL-Pin22
 //+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 
-const String Version = "V2.5 2024/12/30";
+const String Version = "V2.5.1 2025/01/12";
 
 /*Board: ESP32 Dev Module
 Upload Speed: 921600
@@ -35,34 +35,9 @@ PSRAM: Disabled*/
  * make sure to uncomment the t-display driver line (Setup25) */
 
 /// ############################################################################################
-///  MACROS TO DEFINE BELOW
+/// MACROS TO BE DEFINED IN CONFIG.H
 /// ############################################################################################
-
-/// Set this to the correct printed case venturi diameter:
-#define DIAMETER 19
-
-// CO2 sensor support
-// Uncomment to use either STC31 or SCD30 CO2 sensors:
-// #define STC_31
-#define SCD_30
-
-// Uncomment to use either BMP85 or BMP280 barometers:
-// #define BMP085
-// #define BME280
-#define BMP280
-
-// Uncomment to broadcast as sensirion gadget (lots of memory)
-// #define GADGET
-
-// EXPERIMENTAL:
-// If undefined, use CO2 sensor instead of oxygen sensor otherwise
-// calculate CO2 values from O2 data
-#define OXYSENSOR
-
-#define VERBOSE // enable additional logging
-#define DEBUG   // additional debug info
-
-/// ############################################################################################
+#include "config.h"
 
 #include "esp_adc_cal.h" // ADC calibration data
 #include <EEPROM.h>      // include library to read and write settings from flash
@@ -76,7 +51,7 @@ int vref = 1100;
 #error "A CO2 sensor must be enabled if no OXY sensor"
 #endif
 
-#ifdef SCD_30       // original SCD_30 sensor (inadequate - max 4% co2)
+#ifdef SCD_30      // original SCD_30 sensor (inadequate - max 4% co2)
 #include "SCD30.h" //declares "SCD_30 scd30"
 #elif defined(STC_31)
 #include "SensirionI2cStc3x.h" //Use Sensirion library
@@ -92,7 +67,7 @@ SHTC3             mySHTC3;
 #include <Wire.h>
 
 // NOTE: If GadgetBLE doesn't compile because of setMinPreferred/MaxPreferred removed,
-// replace with:
+// replace GadgetBLE code with:
 // _data->pNimBLEAdvertising->setPreferredParams(0x06, 0x12);
 #ifdef GADGET
 #include "Sensirion_Gadget_BLE.h" //library to publish to Sensirion 'gadget' App
@@ -140,7 +115,9 @@ BLEDescriptor     sensorPositionDescriptor(BLEUUID((uint16_t)0x2901)); // 0x2901
 // GoldenCheetah service
 // Publish to golden cheetah as a 'vo2master'
 #define cheetahService BLEUUID("00001523-1212-EFDE-1523-785FEABCD123")
-BLECharacteristic cheetahCharacteristics(BLEUUID("00001524-1212-EFDE-1523-785FEABCD123"), BLECharacteristic::PROPERTY_NOTIFY | 0);
+BLECharacteristic cheetahCharacteristics(BLEUUID("00001524-1212-EFDE-1523-785FEABCD123"), //
+                                         BLECharacteristic::PROPERTY_READ | BLECharacteristic::PROPERTY_WRITE |
+                                             BLECharacteristic::PROPERTY_NOTIFY | BLECharacteristic::PROPERTY_INDICATE);
 BLEDescriptor     cheetahDescriptor(BLEUUID((uint16_t)0x2901));
 
 class MyServerCallbacks : public BLEServerCallbacks {
@@ -229,9 +206,9 @@ float TempC = 15.0;    // Air temperature in Celsius
 float PresPa = 101325; // uncorrected (absolute) barometric pressure
 float Humid = 0;       // dry air
 
-float massFlow = 0;
-float volFlow = 0;
-float volumeTotal = 0;      // variable for holding total volume of breath
+float massFlow = 0.0;
+float volFlow = 0.0;
+float volumeTotal = 0.0;    // variable for holding total volume of breath
 float pressure = 0.0;       // differential pressure of the venturi nozzle
 float pressThreshold = 0.2; // threshold for starting calculation of VE
 float volumeVE = 0.0;
@@ -245,21 +222,22 @@ struct {
     float weightkg = 75.0;        // Standard-body-weight
     bool  heart_on = false;       // Output vo2 as a HRM
     bool  sens_on = true;         // Output as sensiron data
-    bool  cheet_on = false;       // Output as vo2master for GoldenCheetah
-    bool  co2_on = false;         // CO2 sensor active
+    bool  serialbt = false;
+    bool  cheet_on = false; // Output as vo2master for GoldenCheetah
+    bool  co2_on = false;   // CO2 sensor active
 } settings;
 
-float  TimerVolCalc = 0.0;
-float  Timer5s = 0.0;
-float  Timer1min = 0.0;
-float  TimerVO2calc = 0.0;
-float  TimerVO2diff = 0.0; // used for integral of calories
-float  TimerStart = 0.0;
-float  TotalTime = 0.0;
-String TotalTimeMin = String("00:00");
-int    readVE = 0;
-float  TimerVE = 0.0;
-float  DurationVE = 0.0;
+unsigned long TimerVolCalc = 0;
+unsigned long Timer5s = 0;
+unsigned long Timer1min = 0;
+unsigned long TimerVO2calc = 0;
+unsigned long TimerVO2diff = 0; // used for integral of calories
+unsigned long TimerStart = 0;
+unsigned long TotalTime = 0;
+String        TotalTimeMin = String("00:00");
+int           readVE = 0;
+unsigned long TimerVE = 0;
+unsigned long DurationVE = 0;
 
 float lastO2 = 0;
 float baselineO2 = 0;
@@ -349,7 +327,7 @@ void setup() {
     pinMode(ADC_EN, OUTPUT);
     digitalWrite(ADC_EN, HIGH);
     esp_adc_cal_characteristics_t adc_chars;
-    esp_adc_cal_value_t val_type = esp_adc_cal_characterize(ADC_UNIT_1, ADC_ATTEN_DB_11, ADC_WIDTH_BIT_12, 1100, &adc_chars);
+    esp_adc_cal_value_t val_type = esp_adc_cal_characterize(ADC_UNIT_1, ADC_ATTEN_DB_12, ADC_WIDTH_BIT_12, 1100, &adc_chars);
     // Check type of calibration value used to characterize ADC
     if (val_type == ESP_ADC_CAL_VAL_EFUSE_VREF) {
         // Serial.printf("eFuse Vref:%u mV", adc_chars.vref);
@@ -384,12 +362,12 @@ void setup() {
     }
 
 #if defined(BMP085) || defined(BME280) || defined(BMP280)
-    // init barometric sensor ----------
-    #if defined(BMP280)
-        bmpEnabled = bmp.begin(0x76);
-    #else
-        bmpEnabled = bmp.begin(0x76, &Wire);
-    #endif
+// init barometric sensor ----------
+#if defined(BMP280)
+    bmpEnabled = bmp.begin(0x76);
+#else
+    bmpEnabled = bmp.begin(0x76, &Wire);
+#endif
     if (!bmpEnabled) {
 #ifdef VERBOSE
         Serial.println("Unable to initialise bmp sensor");
@@ -436,7 +414,6 @@ void setup() {
     float temperature;
     float RH;
 
-    // stc3x_sensor.enableAutomaticSelfCalibration();
     stc3x_sensor.disableAutomaticSelfCalibration();
 
     float prevCo2 = 0.0;
@@ -527,11 +504,14 @@ void setup() {
 #endif
     }
 #endif
+    // Disable serialbt if using HR or Cheetah BLE
     // init serial bluetooth -----------
-    if (!SerialBT.begin("VO2max")) { // Start Bluetooth with device name
-        tft.drawString("BT NOT ready!", 0, 100, 4);
-    } else {
-        tft.drawString("BT ready", 0, 100, 4);
+    if (settings.serialbt) {
+        if (!SerialBT.begin("VO2max")) { // Start Bluetooth with device name
+            tft.drawString("BT NOT ready!", 0, 100, 4);
+        } else {
+            tft.drawString("BT ready", 0, 100, 4);
+        }
     }
     delay(2000);
 #ifdef OXYSENSOR
@@ -565,7 +545,9 @@ void setup() {
     TimerVO2calc = millis(); // timer between VO2max calculations
     TimerStart = millis();   // holds the millis at start
     TotalTime = 0;
-    // BatteryBT(); // TEST for battery discharge log
+    if (settings.serialbt) {
+        // BatteryBT(); // TEST for battery discharge log
+    }
     // ++++++++++++++++++++++++++++++++++++++++++++
 }
 
@@ -590,9 +572,11 @@ void loop() {
             volumeTotal2 = 0; // resets volume2 to 0 (used for initial 10s sensor test)
             readVoltage();
         }
-        ExcelStream();   // send csv data via wired com port
-        ExcelStreamBT(); // send csv data via Bluetooth com port
-
+        DataStream(false); // send csv data via wired com port
+        if (settings.serialbt) {
+            DataStream(true); // send csv data via Bluetooth com port
+        }
+        // how often to broadcast? is 5s too slow?
 #ifdef GADGET
         if (settings.sens_on) GadgetWrite(); // Send to sensirion
 #endif
@@ -611,15 +595,16 @@ void loop() {
         // Serial.println(energyUsed);
         delay(100);
 
-        if (settings.heart_on) {
+        if (settings.heart_on && _BLEClientConnected) {
             heartRateMeasurementCharacteristics.setValue(heart, 8); // set the new value for heartrate
             heartRateMeasurementCharacteristics.notify();           // send a notification that value has changed
 
             sensorPositionCharacteristic.setValue(hrmPos, 1);
         }
-        // bpm++; // TEST only
-        // ------------
     }
+
+    // bpm++; // TEST only
+    // ------------
 
     /*if (TotalTime >= 10000)*/ { // after 10 sec. activate the buttons for switching the screens
         ReadButtons();
@@ -643,7 +628,9 @@ void loop() {
     if (millis() - Timer1min > 30000) {
         Timer1min = millis(); // reset timer
 
-        // BatteryBT(); //TEST für battery discharge log ++++++++++++++++++++++++++++++++++++++++++
+        if (settings.serialbt) {
+            // BatteryBT(); //TEST für battery discharge log ++++++++++++++++++++++++++++++++++++++++++
+        }
     }
 
     TimerVolCalc = millis(); // part of the integral function to keep calculation volume over time
@@ -871,99 +858,58 @@ void VO2Notify() {
     cheetah.vo2 = vo2Max;
     cheetah.feo2 = lastO2 * 100;
 
-    cheetahCharacteristics.setValue((uint8_t *)&cheetah, 10);
-    cheetahCharacteristics.notify();
+    if (_BLEClientConnected) {
+        cheetahCharacteristics.setValue((uint8_t *)&cheetah, 10);
+        cheetahCharacteristics.notify(true);
+    }
 }
 
 //--------------------------------------------------
-void ExcelStream() {
+void DataStream(bool bt) { // bt - send over bluetooth serial
+    Stream *strm = bt ? (Stream *)&SerialBT : (Stream *)&Serial;
+
     // HeaderStreamed = 1;// TEST: Deactivation of header
     if (HeaderStreamed == 0) {
-        Serial.print("Time");
-        Serial.print(",");
-        Serial.print("VO2");
-        Serial.print(",");
-        Serial.print("VO2MAX");
-        Serial.print(",");
-        Serial.print("VCO2");
-        Serial.print(",");
-        Serial.print("RQ");
-        Serial.print(",");
-        Serial.print("Bvol");
-        Serial.print(",");
-        Serial.print("VEmin");
-        Serial.print(",");
-        Serial.print("Brate");
-        Serial.print(",");
-        Serial.print("outO2%");
-        Serial.print(",");
-        Serial.println("CO2%");
+        const char *labels[] = {"Time", //
+                                "VO2",
+                                "VO2MAX",
+                                "VCO2",
+                                "RQ",
+                                "Bvol",
+                                "VEmin",
+                                "Brate",
+                                "outO2%",
+                                "CO2%\n"};
+        const int   numlab = sizeof(labels) / sizeof(const char *);
+
+        for (int i = 0; i < numlab; i++) {
+            if (i) strm->print(",");
+            strm->print(labels[i]);
+        }
         HeaderStreamed = 1;
     }
-    Serial.print(float(TotalTime / 1000), 0);
-    Serial.print(",");
-    Serial.print(vo2Max);
-    Serial.print(",");
-    Serial.print(vo2MaxMax);
-    Serial.print(",");
-    Serial.print(vco2Max);
-    Serial.print(",");
-    Serial.print(respq);
-    Serial.print(",");
-    Serial.print(volumeExp);
-    Serial.print(",");
-    Serial.print(volumeVEmean);
-    Serial.print(",");
-    Serial.print(freqVEmean);
-    Serial.print(",");
-    Serial.print(lastO2);
-    Serial.print(",");
-    Serial.println(co2perc, 2);
-}
-//--------------------------------------------------
-void ExcelStreamBT() {
-    // HeaderStreamedBT = 1;// TEST: Deactivation of header
-    if (HeaderStreamedBT == 0) {
-        SerialBT.print("Time");
-        SerialBT.print(",");
-        SerialBT.print("VO2");
-        SerialBT.print(",");
-        SerialBT.print("VO2MAX");
-        SerialBT.print(",");
-        SerialBT.print("VCO2");
-        SerialBT.print(",");
-        SerialBT.print("RQ");
-        SerialBT.print(",");
-        SerialBT.print("Bvol");
-        SerialBT.print(",");
-        SerialBT.print("VEmin");
-        SerialBT.print(",");
-        SerialBT.print("Brate");
-        SerialBT.print(",");
-        SerialBT.print("outO2%");
-        SerialBT.print(",");
-        SerialBT.println("CO2%");
-        HeaderStreamedBT = 1;
+
+    float values[] = {float(TotalTime / 1000), //
+                      vo2Max,
+                      vo2MaxMax,
+                      vco2Max,
+                      respq,
+                      volumeExp,
+                      volumeVEmean,
+                      freqVEmean,
+                      lastO2,
+                      co2perc};
+    int   numval = sizeof(values) / sizeof(float);
+
+    int prec = 0;
+    for (int i = 0; i < numval; i++) {
+        if (i > 0) prec = 2;
+        if (i == numval - 1) prec = 3;
+
+        if (i) strm->print(",");
+        strm->print(values[i], prec);
     }
-    SerialBT.print(float(TotalTime / 1000), 0);
-    SerialBT.print(",");
-    SerialBT.print(vo2Max);
-    SerialBT.print(",");
-    SerialBT.print(vo2MaxMax);
-    SerialBT.print(",");
-    SerialBT.print(vco2Max);
-    SerialBT.print(",");
-    SerialBT.print(respq);
-    SerialBT.print(",");
-    SerialBT.print(volumeExp);
-    SerialBT.print(",");
-    SerialBT.print(volumeVEmean);
-    SerialBT.print(",");
-    SerialBT.print(freqVEmean);
-    SerialBT.print(",");
-    SerialBT.print(lastO2);
-    SerialBT.print(",");
-    SerialBT.println(co2perc, 2);
+    strm->println("");
 }
 
 //--------------------------------------------------
@@ -986,11 +932,11 @@ void BatteryBT() {
 float CalcCO2() {
     // Are we using the co2 sensor?
     if (settings.co2_on && co2Enabled) {
+        readCO2();
 #ifdef DEBUG
         Serial.print("Read co2: ");
         Serial.println(co2perc);
 #endif
-        readCO2();
     } else { // default co2values
         co2temp = 35;
     }
@@ -1031,8 +977,8 @@ void readCO2() {
         Serial.println(co2hum);
 #endif
     }
-    // measureGasConcentration will return true when fresh data is available
-    if (stc3x_sensor.measureGasConcentration(co2perc, co2temp)) {
+
+    if (stc3x_sensor.measureGasConcentration(co2perc, co2temp) == 0) {
 #ifdef DEBUG
         Serial.print("Co2 ");
         Serial.println(co2perc); // Log read value
@@ -1068,7 +1014,6 @@ void readCO2() {
         // perhaps change to occasional reset/rebase? or average? due to sensor innaccuracy.
         if (baselineCO2 > co2perc) baselineCO2 = co2perc;
 
-        // co2perc = co2ppm / 10000;
         float co2percdiff = co2perc - baselineCO2; // calculates difference to initial CO2
         if (co2percdiff < 0) co2percdiff = 0;
 
@@ -1322,6 +1267,7 @@ MenuItem menuitems[] = {
     {icount++, "Sensirion", true, 0, &settings.sens_on},
 #endif
     {icount++, "Cheetah", true, 0, &settings.cheet_on},
+    {icount++, "SerialBT", true, 0, &settings.serialbt},
 #if defined(STC_31) || defined(SCD_30)
     {icount++, "CO2 sensor", true, 0, &settings.co2_on},
 #endif
@@ -1682,7 +1628,10 @@ void readVoltage() {
 //---------------------------------------------------------
 
 void InitBLE() {
-    BLEDevice::init("VO2-HR"); // creates the device name
+    if (settings.cheet_on)
+        BLEDevice::init("VO2-MAX"); // creates the device name
+    else if (settings.heart_on)
+        BLEDevice::init("VO2-HR"); // creates the device name
 
     // (1) Create the BLE Server
     BLEServer *pServer = BLEDevice::createServer(); // creates the BLE server
@@ -1710,10 +1659,10 @@ void InitBLE() {
     // (5) Create the BLE Service
     if (settings.cheet_on) {
         BLEService *pCheetah = pServer->createService(cheetahService);
-        pCheetah->addCharacteristic(&cheetahCharacteristics);
         cheetahDescriptor.setValue("VO2 Data");
         cheetahCharacteristics.addDescriptor(&cheetahDescriptor);
         cheetahCharacteristics.addDescriptor(new BLE2902());
+        pCheetah->addCharacteristic(&cheetahCharacteristics);
         pCheetah->start();
     }
     BLEAdvertising *pAdvertising = pServer->getAdvertising();
@@ -1724,12 +1673,15 @@ void InitBLE() {
     if (settings.heart_on) {
         pAdvertising->addServiceUUID(heartRateService);
     }
+
     pAdvertising->setScanResponse(true);
     pAdvertising->setMinPreferred(0x06);
-    pAdvertising->setMinPreferred(0x12);
+    pAdvertising->setMaxPreferred(0x12);
+    // pAdvertising->setPreferredParams(0x06, 0x12);
 
     // (6) start the server and the advertising
-    BLEDevice::startAdvertising();
+    // BLEDevice::startAdvertising();
+    pServer->getAdvertising()->start();
 }
 
 //---------------------------------------------------------
