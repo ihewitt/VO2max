@@ -14,6 +14,7 @@
 // #define BMP280
 
 // Uncomment to broadcast as sensirion gadget (lots of memory)
+// also causes issues for BLE heart rate and cheetah broadcast
 // #define GADGET
 
 // EXPERIMENTAL:

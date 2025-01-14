@@ -87,7 +87,6 @@ BluetoothSerial SerialBT;
 #include <BLEUtils.h>
 
 byte bpm;
-
 byte heart[8] = {0b00001110, 60, 0, 0, 0, 0, 0, 0}; // defines the BT heartrate characteristic
 
 // Byte[0]: flags: 0b00001110:
@@ -105,26 +104,16 @@ byte hrmPos[1] = {2};
 
 bool _BLEClientConnected = false;
 
+#define batteryLevelServiceId BLEUUID((uint16_t)0x180F)
+BLECharacteristic batteryLevelCharacteristics(BLEUUID((uint16_t)0x2A19),
+                                              BLECharacteristic::PROPERTY_READ | BLECharacteristic::PROPERTY_NOTIFY);
+
 // heart rate service
 #define heartRateService BLEUUID((uint16_t)0x180D)
 BLECharacteristic heartRateMeasurementCharacteristics(BLEUUID((uint16_t)0x2A37), BLECharacteristic::PROPERTY_NOTIFY);
 BLECharacteristic sensorPositionCharacteristic(BLEUUID((uint16_t)0x2A38), BLECharacteristic::PROPERTY_READ);
 BLEDescriptor     heartRateDescriptor(BLEUUID((uint16_t)0x2901));
 BLEDescriptor     sensorPositionDescriptor(BLEUUID((uint16_t)0x2901)); // 0x2901: Characteristic User Description
-
-// GoldenCheetah service
-// Publish to golden cheetah as a 'vo2master'
-#define cheetahService BLEUUID("00001523-1212-EFDE-1523-785FEABCD123")
-BLECharacteristic cheetahCharacteristics(BLEUUID("00001524-1212-EFDE-1523-785FEABCD123"), //
-                                         BLECharacteristic::PROPERTY_READ | BLECharacteristic::PROPERTY_WRITE |
-                                             BLECharacteristic::PROPERTY_NOTIFY | BLECharacteristic::PROPERTY_INDICATE);
-BLEDescriptor     cheetahDescriptor(BLEUUID((uint16_t)0x2901));
-
-class MyServerCallbacks : public BLEServerCallbacks {
-    void onConnect(BLEServer *pServer) { _BLEClientConnected = true; };
-
-    void onDisconnect(BLEServer *pServer) { _BLEClientConnected = false; }
-};
 
 struct { // variables for GoldenCheetah
     short freq;
@@ -134,6 +123,22 @@ struct { // variables for GoldenCheetah
     short feo2;
     short vo2;
 } cheetah;
+
+// GoldenCheetah service
+// Publish to golden cheetah as a 'vo2master'
+#define cheetahService BLEUUID("00001523-1212-EFDE-1523-785FEABCD123")
+BLECharacteristic cheetahCharacteristics(BLEUUID("00001524-1212-EFDE-1523-785FEABCD123"), //
+                                         BLECharacteristic::PROPERTY_NOTIFY);
+BLEDescriptor     cheetahDescriptor(BLEUUID((uint16_t)0x2901));
+
+class MyServerCallbacks : public BLEServerCallbacks {
+    void onConnect(BLEServer *pServer) { _BLEClientConnected = true; };
+
+    void onDisconnect(BLEServer *pServer) {
+        BLEDevice::startAdvertising();
+        _BLEClientConnected = false;
+    }
+};
 
 #if defined(BMP085)
 #include <Adafruit_BMP085.h> //Library for barometric sensor
@@ -229,7 +234,7 @@ struct {
 
 unsigned long TimerVolCalc = 0;
 unsigned long Timer5s = 0;
-unsigned long Timer1min = 0;
+unsigned long Timer30s = 0;
 unsigned long TimerVO2calc = 0;
 unsigned long TimerVO2diff = 0; // used for integral of calories
 unsigned long TimerStart = 0;
@@ -378,6 +383,8 @@ void setup() {
     }
 #endif
 
+    // TODO cleanup/simplify output of messages to screen
+
 #ifdef STC_31
     stc3x_sensor.begin(Wire, 0x29);
     delay(20);
@@ -388,6 +395,7 @@ void setup() {
 
     int gas;
 
+    // TODO change logging/errors to display on tft
     if (id == 0x8010304) // stc31-c
     {
         Serial.println("STC_31-C");
@@ -421,10 +429,10 @@ void setup() {
     float stc3xTemperature = 0.0;
 
     // stabilise CO2 sensor
-    // datasheet suggests 20s?
-    // add a "stabilise" in the idle/waiting state instead?
+    // TODO move co2 stabilize/calibrate into idle/waiting state loop
     tft.setCursor(0, 50, 4);
     tft.println("Stablise");
+    // datasheet suggests 20s?
     for (int i = 0; i < 20; i++) {
         temperature = mySHTC3.toDegC(); // "toDegC" returns the temperature
         RH = mySHTC3.toPercent();       // "toPercent" returns the percent humidity
@@ -494,6 +502,17 @@ void setup() {
     // Serial.println("Flow-Sensor I2c connect success!");
     tft.drawString("Flow-Sensor ok", 0, 75, 4);
 
+    delay(2000);
+
+    // Get/check settings
+    doMenu();
+
+    if (settings.cheet_on || settings.heart_on) {
+        InitBLE(); // Now initialise BLE output
+    }
+
+    showParameters();
+
     // activate Sensirion App ----------
 #ifdef GADGET
     if (settings.sens_on) {
@@ -504,7 +523,7 @@ void setup() {
 #endif
     }
 #endif
-    // Disable serialbt if using HR or Cheetah BLE
+
     // init serial bluetooth -----------
     if (settings.serialbt) {
         if (!SerialBT.begin("VO2max")) { // Start Bluetooth with device name
@@ -513,7 +532,7 @@ void setup() {
             tft.drawString("BT ready", 0, 100, 4);
         }
     }
-    delay(2000);
+
 #ifdef OXYSENSOR
     CheckInitialO2();
 #else
@@ -526,14 +545,6 @@ void setup() {
         CheckInitialCO2();
     }
 
-    doMenu();
-
-    showParameters();
-    if (settings.cheet_on || settings.heart_on) {
-        InitBLE(); // init BLE for transmitting VO2 as heartrate
-        bpm = 30;  // initial test value
-    }
-
     tft.fillScreen(TFT_BLACK);
     tft.setTextColor(TFT_GREEN, TFT_BLACK);
 
@@ -541,13 +552,10 @@ void setup() {
 
     TimerVolCalc = millis(); // timer for the volume (VE) integral function
     Timer5s = millis();
-    Timer1min = millis();
+    Timer30s = millis();
     TimerVO2calc = millis(); // timer between VO2max calculations
     TimerStart = millis();   // holds the millis at start
     TotalTime = 0;
-    if (settings.serialbt) {
-        // BatteryBT(); // TEST for battery discharge log
-    }
     // ++++++++++++++++++++++++++++++++++++++++++++
 }
 
@@ -567,12 +575,12 @@ void loop() {
 
         vo2maxCalc(); // vo2 max function call
 
-        /*if (TotalTime >= 10000)*/ {
-            showScreen();
-            volumeTotal2 = 0; // resets volume2 to 0 (used for initial 10s sensor test)
-            readVoltage();
-        }
+        showScreen();
+        volumeTotal2 = 0; // resets volume2 to 0 (used for initial 10s sensor test)
+        readVoltage();
+#ifdef VERBOSE
         DataStream(false); // send csv data via wired com port
+#endif
         if (settings.serialbt) {
             DataStream(true); // send csv data via Bluetooth com port
         }
@@ -583,7 +591,6 @@ void loop() {
         if (settings.cheet_on) VO2Notify(); // Send to GoldenCheetah as VO2 Master
 
         // send BLE data ----------------
-
         bpm = int(vo2Max + 0.5);
         heart[1] = (byte)bpm;
 
@@ -591,8 +598,6 @@ void loop() {
         heart[3] = energyUsed / 256;
         heart[2] = energyUsed - (heart[3] * 256);
 
-        // Serial.println(bpm);
-        // Serial.println(energyUsed);
         delay(100);
 
         if (settings.heart_on && _BLEClientConnected) {
@@ -603,34 +608,26 @@ void loop() {
         }
     }
 
-    // bpm++; // TEST only
-    // ------------
-
-    /*if (TotalTime >= 10000)*/ { // after 10 sec. activate the buttons for switching the screens
-        ReadButtons();
-        if (buttonPushCounter1 > 20 && buttonPushCounter2 > 20) ESP.restart();
-        if (buttonPushCounter1 == 2) {
-            screenNr--;
-            screenChanged = 1;
-        }
-        if (buttonPushCounter2 == 2) {
-            screenNr++;
-            screenChanged = 1;
-        }
-        if (screenNr < 1) screenNr = 6;
-        if (screenNr > 6) screenNr = 1;
-        if (screenChanged == 1) {
-            showScreen();
-            screenChanged = 0;
-        }
+    ReadButtons();
+    if (buttonPushCounter1 > 20 && buttonPushCounter2 > 20) ESP.restart();
+    if (buttonPushCounter1 == 2) {
+        screenNr--;
+        screenChanged = 1;
+    }
+    if (buttonPushCounter2 == 2) {
+        screenNr++;
+        screenChanged = 1;
+    }
+    if (screenNr < 1) screenNr = 6;
+    if (screenNr > 6) screenNr = 1;
+    if (screenChanged == 1) {
+        showScreen();
+        screenChanged = 0;
     }
 
-    if (millis() - Timer1min > 30000) {
-        Timer1min = millis(); // reset timer
-
-        if (settings.serialbt) {
-            // BatteryBT(); //TEST für battery discharge log ++++++++++++++++++++++++++++++++++++++++++
-        }
+    if (millis() - Timer30s > 30000) {
+        Timer30s = millis(); // reset timer
+        BatteryBT();
     }
 
     TimerVolCalc = millis(); // part of the integral function to keep calculation volume over time
@@ -913,18 +910,23 @@ void DataStream(bool bt) { // bt - send over bluetooth serial
 }
 
 //--------------------------------------------------
-
+// TODO add voltage to percent table. hardcode some basics for now.
 void BatteryBT() {
-    // HeaderStreamedBT = 1;// TEST: Deactivation of header
-    if (HeaderStreamedBT == 0) {
-        SerialBT.print("Time");
-        SerialBT.print(",");
-        SerialBT.println("Voltage");
-        HeaderStreamedBT = 1;
-    }
-    SerialBT.print(float(TotalTime / 1000), 0);
-    SerialBT.print(",");
-    SerialBT.println(Battery_Voltage);
+    int level;
+    if (Battery_Voltage > 4.0)
+        level = 100;
+    else if (Battery_Voltage > 3.9)
+        level = 75;
+    else if (Battery_Voltage > 3.7)
+        level = 50;
+    else if (Battery_Voltage > 3.5)
+        level = 25;
+    else if (Battery_Voltage > 3.3)
+        level = 10;
+
+    byte value[1] = {level};
+    batteryLevelCharacteristics.setValue(value, 1);
+    batteryLevelCharacteristics.notify();
 }
 
 //--------------------------------------------------
@@ -1071,17 +1073,23 @@ void AirDensity() {
 #ifdef BME280
         Humid = bmp.readHumidity(); // %
 #endif
-        // Always use initial temperature
-        static float baseTempC = TempC;
+        // TODO NOTE
+        //  Always use initial temperature until we can check/move/setup the barometer to not
+        //  be affected by the increase in device temperature during use.
+        static float baseTempC = TempC; // static for single set
         // rhoATPS = calcRho(TempC, Humid, PresPa); // get Ambient factor
         rhoATPS = calcRho(baseTempC, Humid, PresPa); // get Ambient factor
     }
 
     if (settings.co2_on && co2Enabled) {
-        // co2temp is temperature from CO2 sensor
-        // Hardcode body temp
+        // TODO NOTE
+        //  For now hardcode body temp. instead of using values from co2 sensor
+        //  Humidity seems to read quickly, albeit always at about this level
+        //  temperature is a long time to rise to temperature of expired air
+        //  however, temp *is* used to set values for co2 sensor to improve accuracy
         rhoBTPS = calcRho(35, 95, PresPa); // get body factor
 
+        // co2temp is temperature from CO2 sensor
         // rhoBTPS = calcRho(co2temp, co2hum, PresPa); // get body factor
     }
 
@@ -1105,7 +1113,7 @@ void AirDensity() {
     Serial.println(rhoBTPS);
 #endif
 
-    // Use constants
+    // Use hardcoded constants instead
     // rhoATPS = PresPa / (TempC + 273.15) / 287.058; // calculation of ambient density
     // rhoBTPS = PresPa / (35 + 273.15) / 292.9; // density at BTPS: 35°C, 95% humidity
 }
@@ -1631,28 +1639,33 @@ void InitBLE() {
     if (settings.cheet_on)
         BLEDevice::init("VO2-MAX"); // creates the device name
     else if (settings.heart_on)
-        BLEDevice::init("VO2-HR"); // creates the device name
+        BLEDevice::init("VO2-HR"); // differnt name if just hr to help check/debugging
 
     // (1) Create the BLE Server
     BLEServer *pServer = BLEDevice::createServer(); // creates the BLE server
     pServer->setCallbacks(new MyServerCallbacks()); // creates the server callback function
+
+    BLEService *batteryLevelService = pServer->createService(batteryLevelServiceId);
+    batteryLevelCharacteristics.addDescriptor(new BLE2902());
+    batteryLevelService->addCharacteristic(&batteryLevelCharacteristics);
+    batteryLevelService->start();
 
     // (2) Create the BLE Service "heartRateService"
     if (settings.heart_on) {
         BLEService *pHeart = pServer->createService(heartRateService); // creates heatrate service with 0x180D
 
         // (3) Create the characteristics, descriptor, notification
-        pHeart->addCharacteristic(&heartRateMeasurementCharacteristics); // creates heartrate
         // characteristics 0x2837
         heartRateDescriptor.setValue("Rate from 0 to 200"); // describtion of the characteristic
         heartRateMeasurementCharacteristics.addDescriptor(&heartRateDescriptor);
         heartRateMeasurementCharacteristics.addDescriptor(new BLE2902()); // necessary for notifications
-        // client switches server notifications on/off via BLE2902 protocol
+        pHeart->addCharacteristic(&heartRateMeasurementCharacteristics);  // creates heartrate
+        //  client switches server notifications on/off via BLE2902 protocol
 
         // (4) Create additional characteristics
-        pHeart->addCharacteristic(&sensorPositionCharacteristic);
         sensorPositionDescriptor.setValue("Position 0 - 6");
         sensorPositionCharacteristic.addDescriptor(&sensorPositionDescriptor);
+        pHeart->addCharacteristic(&sensorPositionCharacteristic);
         pHeart->start();
     }
 
@@ -1661,7 +1674,7 @@ void InitBLE() {
         BLEService *pCheetah = pServer->createService(cheetahService);
         cheetahDescriptor.setValue("VO2 Data");
         cheetahCharacteristics.addDescriptor(&cheetahDescriptor);
-        cheetahCharacteristics.addDescriptor(new BLE2902());
+        cheetahCharacteristics.addDescriptor(new BLE2902()); // will it work without?
         pCheetah->addCharacteristic(&cheetahCharacteristics);
         pCheetah->start();
     }
@@ -1674,14 +1687,13 @@ void InitBLE() {
         pAdvertising->addServiceUUID(heartRateService);
     }
 
-    pAdvertising->setScanResponse(true);
+    pAdvertising->setScanResponse(true); // true? reduce power use?
     pAdvertising->setMinPreferred(0x06);
     pAdvertising->setMaxPreferred(0x12);
     // pAdvertising->setPreferredParams(0x06, 0x12);
 
     // (6) start the server and the advertising
-    // BLEDevice::startAdvertising();
-    pServer->getAdvertising()->start();
+    BLEDevice::startAdvertising();
 }
 
 //---------------------------------------------------------
