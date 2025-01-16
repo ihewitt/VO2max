@@ -407,7 +407,8 @@ void setup() {
         gas = 0x03;
     }
     if (0 != stc3x_sensor.setBinaryGas(gas)) Serial.println("Unable to access stc3x");
-
+    stc3x_sensor.enableWeakFilter();
+    
     if (mySHTC3.begin() != SHTC3_Status_Nominal) {
         Serial.println(F("SHTC3 not detected. Please check wiring. Freezing..."));
         while (1)
@@ -779,7 +780,6 @@ void VolumeCalc() {
         tft.drawCentreString("SENSOR LIMIT!", 120, 55, 4);
     }
     if (pressure < 0) pressure = 0;
-
     if (pressure < pressThreshold && readVE == 1) { // read volumeVE
         readVE = 0;
         DurationVE = millis() - TimerVE;
@@ -937,7 +937,7 @@ float CalcCO2() {
         readCO2();
 #ifdef DEBUG
         Serial.print("Read co2: ");
-        Serial.println(co2perc);
+        Serial.print(co2perc);
 #endif
     } else { // default co2values
         co2temp = 35;
@@ -948,7 +948,9 @@ float CalcCO2() {
     if (lastO2 > baselineO2) baselineO2 = lastO2; // correction for drift of O2 sensor
 #ifdef DEBUG
     // Debug. compare co2
-    Serial.print("Calc co2: ");
+    Serial.print(" O2: ");
+    Serial.print(oxygenData);
+    Serial.print(" Calc co2: ");
     Serial.println(baselineO2 - lastO2);
 #endif
     return baselineO2 - lastO2;
@@ -1028,9 +1030,9 @@ void readCO2() {
 #ifdef VERBOSE
     Serial.print("VCO2t: ");
     Serial.print(vco2Total);
-    Serial.print("VO2t: ");
+    Serial.print(" VO2t: ");
     Serial.print(vo2Total);
-    Serial.print("RQ: ");
+    Serial.print(" RQ: ");
     Serial.println(respq);
 #endif
     if (isnan(respq)) respq = 0; // correction for errors/div by 0
