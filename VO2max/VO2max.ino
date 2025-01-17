@@ -1706,14 +1706,18 @@ void InitBLE() {
     // (5) Create the BLE Service
     if (settings.cheet_on) {
         BLEService *pCheetah = pServer->createService(cheetahService);
+        cheetahEnvDescriptor.setValue("Environment");
         cheetahGasDescriptor.setValue("GasExchange");
         cheetahVentDescriptor.setValue("Ventination");
 
+        cheetahEnv.addDescriptor(&cheetahEnvDescriptor);
+        cheetahEnv.addDescriptor(new BLE2902());
         cheetahVent.addDescriptor(&cheetahVentDescriptor);
-        cheetahVent.addDescriptor(new BLE2902()); // will it work without?
+        cheetahVent.addDescriptor(new BLE2902());
         cheetahGas.addDescriptor(&cheetahGasDescriptor);
-        cheetahGas.addDescriptor(new BLE2902()); // will it work without?
+        cheetahGas.addDescriptor(new BLE2902());
 
+        pCheetah->addCharacteristic(&cheetahEnv);
         pCheetah->addCharacteristic(&cheetahVent);
         pCheetah->addCharacteristic(&cheetahGas);
         pCheetah->start();
