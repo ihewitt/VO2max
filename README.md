@@ -50,3 +50,4 @@ Additional changes in this version:
 - Ability to run without O₂ sensor
 
 More notes on the CO₂ sensor use can be found at: [CO₂ sensors](https://blog.ivor.org/2024/12/carbon-dioxide.html)
+Details of the interface: [Screens](docs/screens.md)
