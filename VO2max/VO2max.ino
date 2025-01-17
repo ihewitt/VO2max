@@ -7,7 +7,7 @@
 // TTGO T-Display: SDA-Pin21, SCL-Pin22
 //+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 
-const String Version = "V2.5.1 2025/01/12";
+const String Version = "V2.5.2 2025/01/17";
 
 /*Board: ESP32 Dev Module
 Upload Speed: 921600
@@ -115,21 +115,44 @@ BLECharacteristic sensorPositionCharacteristic(BLEUUID((uint16_t)0x2A38), BLECha
 BLEDescriptor     heartRateDescriptor(BLEUUID((uint16_t)0x2901));
 BLEDescriptor     sensorPositionDescriptor(BLEUUID((uint16_t)0x2901)); // 0x2901: Characteristic User Description
 
-struct { // variables for GoldenCheetah
-    short freq;
-    byte  temp;
-    byte  hum;
-    short rmv;
-    short feo2;
-    short vo2;
-} cheetah;
+struct {
+    uint16_t feo2;
+    uint16_t feco2;
+    uint16_t vo2;
+    uint16_t vco2;
+} cheetGas;
+
+struct {
+    uint16_t rf;
+    uint16_t tidal;
+    uint16_t rmv;
+} cheetVent;
+
+struct {
+    uint16_t pressure;
+    uint16_t temp;
+    uint16_t hum;
+    uint16_t o2;
+    uint16_t unused;
+} cheetEnv;
 
 // GoldenCheetah service
-// Publish to golden cheetah as a 'vo2master'
+// Publish to golden cheetah using 'vo2master' device characteristics
 #define cheetahService BLEUUID("00001523-1212-EFDE-1523-785FEABCD123")
-BLECharacteristic cheetahCharacteristics(BLEUUID("00001524-1212-EFDE-1523-785FEABCD123"), //
-                                         BLECharacteristic::PROPERTY_NOTIFY);
-BLEDescriptor     cheetahDescriptor(BLEUUID((uint16_t)0x2901));
+
+// Use new format to add ventilatory and co2 info
+BLECharacteristic cheetahVent(BLEUUID("00001527-1212-EFDE-1523-785FEABCD123"), //
+                              BLECharacteristic::PROPERTY_NOTIFY);
+
+BLECharacteristic cheetahGas(BLEUUID("00001528-1212-EFDE-1523-785FEABCD123"), //
+                             BLECharacteristic::PROPERTY_NOTIFY);
+
+BLECharacteristic cheetahEnv(BLEUUID("00001529-1212-EFDE-1523-785FEABCD123"), //
+                             BLECharacteristic::PROPERTY_NOTIFY);
+
+BLEDescriptor cheetahEnvDescriptor(BLEUUID((uint16_t)0x2901));
+BLEDescriptor cheetahVentDescriptor(BLEUUID((uint16_t)0x2901));
+BLEDescriptor cheetahGasDescriptor(BLEUUID((uint16_t)0x2901));
 
 class MyServerCallbacks : public BLEServerCallbacks {
     void onConnect(BLEServer *pServer) { _BLEClientConnected = true; };
@@ -219,6 +242,7 @@ float pressThreshold = 0.2; // threshold for starting calculation of VE
 float volumeVE = 0.0;
 float volumeVEmean = 0.0;
 float volumeExp = 0.0;
+float BPM = 0.0;
 
 // Basic defaults in settings, saved to eeprom
 struct {
@@ -408,7 +432,7 @@ void setup() {
     }
     if (0 != stc3x_sensor.setBinaryGas(gas)) Serial.println("Unable to access stc3x");
     stc3x_sensor.enableWeakFilter();
-    
+
     if (mySHTC3.begin() != SHTC3_Status_Nominal) {
         Serial.println(F("SHTC3 not detected. Please check wiring. Freezing..."));
         while (1)
@@ -783,6 +807,8 @@ void VolumeCalc() {
     if (pressure < pressThreshold && readVE == 1) { // read volumeVE
         readVE = 0;
         DurationVE = millis() - TimerVE;
+        BPM = (60 * 1000) / DurationVE;
+
         TimerVE = millis(); // start timerVE
         volumeExp = volumeTotal;
         volumeTotal = 0; // resets volume for next breath
@@ -838,26 +864,33 @@ void GadgetWrite() {
 //--------------------------------------------------
 // Output as basic VO2 Master data for GoldenCheetah
 void VO2Notify() {
-    if (co2Enabled && settings.co2_on) // CO2 temp data
-    {
-        cheetah.temp = co2temp;
-        cheetah.hum = co2hum; // humid
-    } else if (bmpEnabled)    // baro temp data
-    {
-        cheetah.temp = TempC;
-        cheetah.hum = Humid; // humid
-    } else                   // btps defaults
-    {
-        cheetah.temp = 35;
-        cheetah.hum = 95;
-    }
-    cheetah.rmv = volumeVEmean;
-    cheetah.vo2 = vo2Max;
-    cheetah.feo2 = lastO2 * 100;
+
+    cheetEnv.pressure = PresPa / 10; // pressure hPa *10 == Pa /10
+    cheetEnv.temp = TempC * 100;
+    cheetEnv.hum = Humid * 100;
+    cheetEnv.o2 = 20.9 * 100; // ambient o2 so just hardcode
+
+    // breaths per minute
+    cheetVent.rf = BPM * 100;
+    // litres per breath
+    cheetVent.tidal = volumeExp * 100;
+    // one minute volume
+    cheetVent.rmv = volumeVEmean * 100;
+
+    cheetGas.feo2 = lastO2 * 100;
+    cheetGas.feco2 = co2perc * 100;
+    cheetGas.vo2 = vo2Max;
+    cheetGas.vco2 = vco2Max;
 
     if (_BLEClientConnected) {
-        cheetahCharacteristics.setValue((uint8_t *)&cheetah, 10);
-        cheetahCharacteristics.notify(true);
+        cheetahEnv.setValue((uint8_t *)&cheetEnv, sizeof(cheetEnv));
+        cheetahEnv.notify(true);
+
+        cheetahVent.setValue((uint8_t *)&cheetVent, sizeof(cheetVent));
+        cheetahVent.notify(true);
+
+        cheetahGas.setValue((uint8_t *)&cheetGas, sizeof(cheetGas));
+        cheetahGas.notify(true);
     }
 }
 
@@ -1172,11 +1205,10 @@ void showScreen() { // select active screen
 //--------------------------------------------------
 void showParameters() {
     while (digitalRead(buttonPin2)) { // wait until button2 is pressed
-        // Let stabilise
-        if (settings.co2_on && co2Enabled) {
-            readCO2();
-            baselineCO2 = co2perc;
-        }
+
+        // TODO move stc calibration into this stabilise section?
+        //  Let stabilise
+        CalcCO2();
         AirDensity();
         tftParameters(); // show initial sensor parameters
 
@@ -1674,10 +1706,16 @@ void InitBLE() {
     // (5) Create the BLE Service
     if (settings.cheet_on) {
         BLEService *pCheetah = pServer->createService(cheetahService);
-        cheetahDescriptor.setValue("VO2 Data");
-        cheetahCharacteristics.addDescriptor(&cheetahDescriptor);
-        cheetahCharacteristics.addDescriptor(new BLE2902()); // will it work without?
-        pCheetah->addCharacteristic(&cheetahCharacteristics);
+        cheetahGasDescriptor.setValue("GasExchange");
+        cheetahVentDescriptor.setValue("Ventination");
+
+        cheetahVent.addDescriptor(&cheetahVentDescriptor);
+        cheetahVent.addDescriptor(new BLE2902()); // will it work without?
+        cheetahGas.addDescriptor(&cheetahGasDescriptor);
+        cheetahGas.addDescriptor(new BLE2902()); // will it work without?
+
+        pCheetah->addCharacteristic(&cheetahVent);
+        pCheetah->addCharacteristic(&cheetahGas);
         pCheetah->start();
     }
     BLEAdvertising *pAdvertising = pServer->getAdvertising();
