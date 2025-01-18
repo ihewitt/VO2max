@@ -137,10 +137,20 @@ struct {
 } cheetEnv;
 
 // GoldenCheetah service
-// Publish to golden cheetah using 'vo2master' device characteristics
+// Publish to GoldenCcheetah using the 'vo2master' device characteristics
 #define cheetahService BLEUUID("00001523-1212-EFDE-1523-785FEABCD123")
 
+#define nameService BLEUUID((uint16_t)0x180A)
+BLECharacteristic nameCharacteristics(BLEUUID((uint16_t)0x2A24), BLECharacteristic::PROPERTY_READ);
+
 // Use new format to add ventilatory and co2 info
+BLECharacteristic cheetahIn(BLEUUID("00001525-1212-EFDE-1523-785FEABCD123"), //
+                            BLECharacteristic::PROPERTY_WRITE);
+BLECharacteristic cheetahOut(BLEUUID("00001526-1212-EFDE-1523-785FEABCD123"), //
+                             BLECharacteristic::PROPERTY_READ | BLECharacteristic::PROPERTY_NOTIFY);
+
+BLEDescriptor cheetahOutDescriptor(BLEUUID((uint16_t)0x0100)); //? cheetah has this?
+
 BLECharacteristic cheetahVent(BLEUUID("00001527-1212-EFDE-1523-785FEABCD123"), //
                               BLECharacteristic::PROPERTY_NOTIFY);
 
@@ -150,16 +160,26 @@ BLECharacteristic cheetahGas(BLEUUID("00001528-1212-EFDE-1523-785FEABCD123"), //
 BLECharacteristic cheetahEnv(BLEUUID("00001529-1212-EFDE-1523-785FEABCD123"), //
                              BLECharacteristic::PROPERTY_NOTIFY);
 
-BLEDescriptor cheetahEnvDescriptor(BLEUUID((uint16_t)0x2901));
-BLEDescriptor cheetahVentDescriptor(BLEUUID((uint16_t)0x2901));
-BLEDescriptor cheetahGasDescriptor(BLEUUID((uint16_t)0x2901));
-
 class MyServerCallbacks : public BLEServerCallbacks {
-    void onConnect(BLEServer *pServer) { _BLEClientConnected = true; };
+    void onConnect(BLEServer *pServer) {
+        _BLEClientConnected = true;
+    };
 
     void onDisconnect(BLEServer *pServer) {
         BLEDevice::startAdvertising();
         _BLEClientConnected = false;
+    }
+};
+
+class MyCallbacks : public BLECharacteristicCallbacks {
+    void onWrite(BLECharacteristic *pCharacteristic) {
+        String rxValue = pCharacteristic->getValue();
+
+        if (rxValue.length() >= 2 ) {
+            uint8_t command = rxValue[0];
+            uint8_t value = rxValue[1];
+            Serial.printf("Cmd %02x, Val %02x\n", command,value);
+        }
     }
 };
 
@@ -246,14 +266,15 @@ float BPM = 0.0;
 
 // Basic defaults in settings, saved to eeprom
 struct {
-    int   version = 1;            // Make sure saved data is right version
+    int   version = 2;            // Make sure saved data is right version
     float correctionSensor = 1.0; // calculated from 3L calibration syringe
     float weightkg = 75.0;        // Standard-body-weight
     bool  heart_on = false;       // Output vo2 as a HRM
     bool  sens_on = true;         // Output as sensiron data
-    bool  serialbt = false;
-    bool  cheet_on = false; // Output as vo2master for GoldenCheetah
-    bool  co2_on = false;   // CO2 sensor active
+    bool  serialbt = false;       // Send detail over Serial Bluetooth
+    bool  cheet_on = false;       // Output as vo2master for GoldenCheetah
+    bool  co2_on = false;         // CO2 sensor active
+    bool  mult = false;           // Multiply BLE cheetah o2 *100, GoldenCheetah expects x1, Vo2master x100
 } settings;
 
 unsigned long TimerVolCalc = 0;
@@ -566,7 +587,6 @@ void setup() {
 #endif
 
     if (settings.co2_on && co2Enabled) {
-        //
         CheckInitialCO2();
     }
 
@@ -822,16 +842,16 @@ void VolumeCalc() {
         if (freqVEmean < 1) freqVEmean = 0;
 
 #ifdef VERBOSE
-        Serial.print("volumeExp: ");
-        Serial.print(volumeExp);
-        Serial.print("   VE: ");
-        Serial.print(volumeVE);
-        Serial.print("   VEmean: ");
-        Serial.print(volumeVEmean);
-        Serial.print("   freqVE: ");
-        Serial.print(freqVE, 1);
-        Serial.print("   freqVEmean: ");
-        Serial.println(freqVEmean, 1);
+        Serial.printf("volumeExp: %f   "
+                      "VE: %f   "
+                      "VEmean: %f   "
+                      "freqVE: %.1f   "
+                      "freqVEmean: %.1f\n",
+                      volumeExp,
+                      volumeVE,
+                      volumeVEmean,
+                      freqVE,
+                      freqVEmean);
 #endif
     }
     if (millis() - TimerVE > 5000) readVE = 1; // readVE at least every 5s
@@ -876,11 +896,10 @@ void VO2Notify() {
     cheetVent.tidal = volumeExp * 100;
     // one minute volume
     cheetVent.rmv = volumeVEmean * 100;
-
     cheetGas.feo2 = lastO2 * 100;
     cheetGas.feco2 = co2perc * 100;
-    cheetGas.vo2 = vo2Max;
-    cheetGas.vco2 = vco2Max;
+    cheetGas.vo2 = vo2Max * settings.mult ? 100 : 1;
+    cheetGas.vco2 = vco2Max * settings.mult ? 100 : 1;
 
     if (_BLEClientConnected) {
         cheetahEnv.setValue((uint8_t *)&cheetEnv, sizeof(cheetEnv));
@@ -969,8 +988,7 @@ float CalcCO2() {
     if (settings.co2_on && co2Enabled) {
         readCO2();
 #ifdef DEBUG
-        Serial.print("Read co2: ");
-        Serial.print(co2perc);
+        Serial.printf("Read co2: %f", co2perc);
 #endif
     } else { // default co2values
         co2temp = 35;
@@ -981,10 +999,7 @@ float CalcCO2() {
     if (lastO2 > baselineO2) baselineO2 = lastO2; // correction for drift of O2 sensor
 #ifdef DEBUG
     // Debug. compare co2
-    Serial.print(" O2: ");
-    Serial.print(oxygenData);
-    Serial.print(" Calc co2: ");
-    Serial.println(baselineO2 - lastO2);
+    Serial.print(" O2: %f Calc co2: %f\n", oxygenData, baselineO2 - lastO2);
 #endif
     return baselineO2 - lastO2;
 #else
@@ -1008,17 +1023,13 @@ void readCO2() {
         uint16_t pressure = PresPa / 100;
         stc3x_sensor.setPressure(pressure); // Pressure in mbar
 #ifdef DEBUG
-        Serial.print("Read temp ");
-        Serial.print(co2temp);
-        Serial.print(" hum ");
-        Serial.println(co2hum);
+        Serial.printf("Read temp %f hum %f\n", co2temp, co2hum);
 #endif
     }
 
     if (stc3x_sensor.measureGasConcentration(co2perc, co2temp) == 0) {
 #ifdef DEBUG
-        Serial.print("Co2 ");
-        Serial.println(co2perc); // Log read value
+        Serial.printf("Co2 %f\n", co2perc);
 #endif
         if (co2perc < 0) {
             co2perc = 0.0;
@@ -1061,26 +1072,13 @@ void readCO2() {
         // CO2: 44g/mol, O2: 32 g/mol
     }
 #ifdef VERBOSE
-    Serial.print("VCO2t: ");
-    Serial.print(vco2Total);
-    Serial.print(" VO2t: ");
-    Serial.print(vo2Total);
-    Serial.print(" RQ: ");
-    Serial.println(respq);
+    Serial.printf("VCO2t: %f VO2t: %f RQ: %f\n", vco2Total, vo2Total, respq);
 #endif
     if (isnan(respq)) respq = 0; // correction for errors/div by 0
     if (respq > 1.5) respq = 0;
 
 #ifdef VERBOSE
-    Serial.print("CO2 values: ");
-    Serial.print(co2perc);
-    Serial.print(" %");
-    Serial.print("Temp = ");
-    Serial.print(co2temp);
-    Serial.print(" ℃ ");
-    Serial.print("Hum = ");
-    Serial.print(co2hum);
-    Serial.println(" %");
+    Serial.printf("CO2 values: %f%% Temp = %f℃ Hum = %f%%\n", co2perc, co2temp, co2hum);
 #endif
 }
 
@@ -1129,23 +1127,14 @@ void AirDensity() {
     }
 
 #ifdef VERBOSE
-    Serial.print("Ambient: ");
-    Serial.print(TempC);
-    Serial.print("℃ ");
-    Serial.print(Humid);
-    Serial.print("% ");
-    Serial.print("Expired: ");
-    Serial.print(co2temp);
-    Serial.print("℃ ");
-    Serial.print(co2hum);
-    Serial.print("% ");
-    Serial.print("Pressure: ");
-    Serial.print(PresPa / 100);
-    Serial.println("pa");
-    Serial.print("ATPS: ");
-    Serial.print(rhoATPS);
-    Serial.print("BTPS: ");
-    Serial.println(rhoBTPS);
+    Serial.printf("Ambient: %f℃ %f%% Expired: %f℃ %f%% Pressure: %fpa ATPS: %f BTPS: %f\n",
+                  TempC,
+                  Humid,
+                  co2temp,
+                  co2hum,
+                  PresPa / 100,
+                  rhoATPS,
+                  rhoBTPS);
 #endif
 
     // Use hardcoded constants instead
@@ -1309,6 +1298,7 @@ MenuItem menuitems[] = {
     {icount++, "Sensirion", true, 0, &settings.sens_on},
 #endif
     {icount++, "Cheetah", true, 0, &settings.cheet_on},
+    {icount++, "O2 x100", true, 0, &settings.mult},
     {icount++, "SerialBT", true, 0, &settings.serialbt},
 #if defined(STC_31) || defined(SCD_30)
     {icount++, "CO2 sensor", true, 0, &settings.co2_on},
@@ -1705,18 +1695,24 @@ void InitBLE() {
 
     // (5) Create the BLE Service
     if (settings.cheet_on) {
-        BLEService *pCheetah = pServer->createService(cheetahService);
-        cheetahEnvDescriptor.setValue("Environment");
-        cheetahGasDescriptor.setValue("GasExchange");
-        cheetahVentDescriptor.setValue("Ventination");
+        BLEService *pname = pServer->createService(nameService);
+        pname->addCharacteristic(&nameCharacteristics);
+        const char *ver = "1.3.0";
+        nameCharacteristics.setValue((uint8_t *)ver, 5);
+        pname->start();
 
-        cheetahEnv.addDescriptor(&cheetahEnvDescriptor);
+        BLEService *pCheetah = pServer->createService(cheetahService);
+
+        cheetahIn.setCallbacks(new MyCallbacks());
+
+        cheetahOut.addDescriptor(&cheetahOutDescriptor);
+
         cheetahEnv.addDescriptor(new BLE2902());
-        cheetahVent.addDescriptor(&cheetahVentDescriptor);
         cheetahVent.addDescriptor(new BLE2902());
-        cheetahGas.addDescriptor(&cheetahGasDescriptor);
         cheetahGas.addDescriptor(new BLE2902());
 
+        pCheetah->addCharacteristic(&cheetahIn);
+        pCheetah->addCharacteristic(&cheetahOut);
         pCheetah->addCharacteristic(&cheetahEnv);
         pCheetah->addCharacteristic(&cheetahVent);
         pCheetah->addCharacteristic(&cheetahGas);
@@ -1734,7 +1730,6 @@ void InitBLE() {
     pAdvertising->setScanResponse(true); // true? reduce power use?
     pAdvertising->setMinPreferred(0x06);
     pAdvertising->setMaxPreferred(0x12);
-    // pAdvertising->setPreferredParams(0x06, 0x12);
 
     // (6) start the server and the advertising
     BLEDevice::startAdvertising();
