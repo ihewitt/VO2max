@@ -11,8 +11,9 @@ Source code for Arduino under "VO₂Max" - Arduino board settings to use for TTG
     Flash Frequency: 80Mhz
     Flash Mode: QIO
     Flash Size: 4MB (32Mb)
-    Partition Scheme: Default 4MB with spiffs (1.2MB APP/1.5 SPIFFS)
-    Core Debug Level: None`
+    Partition Scheme: Huge APP (3MB No OTA/1MB SPIFFS)
+    Core Debug Level: None
+    PSRAM: Disabled
 
 <figure>
     <img src="/images/parts.jpg" width="640" height="480"
