@@ -161,9 +161,7 @@ BLECharacteristic cheetahEnv(BLEUUID("00001529-1212-EFDE-1523-785FEABCD123"), //
                              BLECharacteristic::PROPERTY_NOTIFY);
 
 class MyServerCallbacks : public BLEServerCallbacks {
-    void onConnect(BLEServer *pServer) {
-        _BLEClientConnected = true;
-    };
+    void onConnect(BLEServer *pServer) { _BLEClientConnected = true; };
 
     void onDisconnect(BLEServer *pServer) {
         BLEDevice::startAdvertising();
@@ -175,10 +173,10 @@ class MyCallbacks : public BLECharacteristicCallbacks {
     void onWrite(BLECharacteristic *pCharacteristic) {
         String rxValue = pCharacteristic->getValue();
 
-        if (rxValue.length() >= 2 ) {
+        if (rxValue.length() >= 2) {
             uint8_t command = rxValue[0];
             uint8_t value = rxValue[1];
-            Serial.printf("Cmd %02x, Val %02x\n", command,value);
+            Serial.printf("Cmd %02x, Val %02x\n", command, value);
         }
     }
 };
@@ -274,7 +272,6 @@ struct {
     bool  serialbt = false;       // Send detail over Serial Bluetooth
     bool  cheet_on = false;       // Output as vo2master for GoldenCheetah
     bool  co2_on = false;         // CO2 sensor active
-    bool  mult = false;           // Multiply BLE cheetah o2 *100, GoldenCheetah expects x1, Vo2master x100
 } settings;
 
 unsigned long TimerVolCalc = 0;
@@ -823,7 +820,9 @@ void VolumeCalc() {
         tft.setTextColor(TFT_WHITE, TFT_RED);
         tft.drawCentreString("SENSOR LIMIT!", 120, 55, 4);
     }
+
     if (pressure < 0) pressure = 0;
+
     if (pressure < pressThreshold && readVE == 1) { // read volumeVE
         readVE = 0;
         DurationVE = millis() - TimerVE;
@@ -898,8 +897,8 @@ void VO2Notify() {
     cheetVent.rmv = volumeVEmean * 100;
     cheetGas.feo2 = lastO2 * 100;
     cheetGas.feco2 = co2perc * 100;
-    cheetGas.vo2 = vo2Max * settings.mult ? 100 : 1;
-    cheetGas.vco2 = vco2Max * settings.mult ? 100 : 1;
+    cheetGas.vo2 = vo2Total;   // expects raw/unnormalised ml/min data
+    cheetGas.vco2 = vco2Total; // expects raw/unnormalised ml/min data
 
     if (_BLEClientConnected) {
         cheetahEnv.setValue((uint8_t *)&cheetEnv, sizeof(cheetEnv));
@@ -1298,7 +1297,6 @@ MenuItem menuitems[] = {
     {icount++, "Sensirion", true, 0, &settings.sens_on},
 #endif
     {icount++, "Cheetah", true, 0, &settings.cheet_on},
-    {icount++, "O2 x100", true, 0, &settings.mult},
     {icount++, "SerialBT", true, 0, &settings.serialbt},
 #if defined(STC_31) || defined(SCD_30)
     {icount++, "CO2 sensor", true, 0, &settings.co2_on},
